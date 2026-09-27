@@ -38,6 +38,7 @@ class Tray:
 
     def on_restored(self) -> None:
         self.hidden = False
+        self._ask_reload_history()
 
     def _open_dialog(self) -> None:
         time.sleep(0.05)
@@ -89,6 +90,13 @@ class Tray:
         try:
             self.window.show()
             self.window.restore()
+        except Exception:
+            pass
+        self._ask_reload_history()
+
+    def _ask_reload_history(self) -> None:
+        try:
+            self.window.evaluate_js("window.reloadLiveHistory && window.reloadLiveHistory()")
         except Exception:
             pass
 

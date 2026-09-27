@@ -1492,8 +1492,22 @@ def _sane_point(point: dict) -> bool:
 def _decimate(points: list[dict], limit: int) -> list[dict]:
     if len(points) <= limit:
         return points
-    step = len(points) / limit
-    return [points[int(i * step)] for i in range(limit)]
+    keep_tail = min(180, max(24, limit // 4))
+    tail = points[-keep_tail:]
+    head = points[:-keep_tail]
+    budget = max(1, limit - len(tail))
+    if len(head) <= budget:
+        return head + tail
+    t0 = float(head[0]["t"])
+    t1 = float(head[-1]["t"])
+    span = max(1e-3, t1 - t0)
+    buckets: dict[int, dict] = {}
+    for point in head:
+        idx = min(budget - 1, int((float(point["t"]) - t0) / span * (budget - 1)))
+        buckets[idx] = point
+    cut = tail[0]["t"]
+    merged = [buckets[idx] for idx in sorted(buckets) if buckets[idx]["t"] < cut]
+    return merged + tail
 
 
 def _command_result(action: str, reply: str) -> str:

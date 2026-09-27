@@ -81,7 +81,7 @@ const SERIES = {
       { key: "out", color: LINE_COLORS.out, name: "выход" },
     ],
   },
-  load: { unit: "%", lines: [{ key: "load", color: LINE_COLORS.load, name: "нагрузка" }] },
+  load: { unit: "Вт", lines: [{ key: "load", color: LINE_COLORS.load, name: "нагрузка" }] },
   battery: { unit: "В", lines: [{ key: "batt", color: LINE_COLORS.batt, name: "батарея" }] },
   charge: { unit: "%", lines: [{ key: "soc", color: LINE_COLORS.soc, name: "заряд" }] },
   freq: { unit: "Гц", lines: [{ key: "hz", color: LINE_COLORS.hz, name: "частота" }] },
@@ -151,7 +151,7 @@ const TG_ACTIONS = [
 const SPARK_LINES = [
   { key: "in", color: LINE_COLORS.in, name: "вход", unit: "В" },
   { key: "out", color: LINE_COLORS.out, name: "выход", unit: "В" },
-  { key: "load", color: LINE_COLORS.load, name: "нагрузка", unit: "%" },
+  { key: "load", color: LINE_COLORS.load, name: "нагрузка", unit: "Вт" },
   { key: "batt", color: LINE_COLORS.batt, name: "батарея", unit: "В" },
   { key: "soc", color: LINE_COLORS.soc, name: "заряд", unit: "%" },
   { key: "hz", color: LINE_COLORS.hz, name: "частота", unit: "Гц" },
@@ -234,6 +234,10 @@ $("eventList").addEventListener("click", (event) => {
 window.showQuitDialog = showQuitDialog;
 window.prepareForScreenshot = prepareForScreenshot;
 window.restoreAfterScreenshot = restoreAfterScreenshot;
+window.reloadLiveHistory = reloadLiveHistory;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") reloadLiveHistory();
+});
 $("tgDigest").addEventListener("change", saveTelegramFlags);
 $("tgEventList").addEventListener("change", (event) => {
   const input = event.target;
@@ -386,12 +390,60 @@ function showTab(name) {
   if (name === "reports") loadReport();
 }
 
+let historyReloadTimer = 0;
+
+function wattsFromPct(pct) {
+  if (pct == null || Number.isNaN(Number(pct))) return null;
+  const kva = Number(state && state.settings && state.settings.ups_kva);
+  const rating = Number.isFinite(kva) && kva > 0 ? kva : 0.7;
+  return Math.max(0, Math.round(rating * 10 * Number(pct)));
+}
+
+function readingWatts(reading) {
+  if (!reading) return null;
+  if (reading.load_w != null) return reading.load_w;
+  return wattsFromPct(reading.load_pct);
+}
+
+function asChartPoint(point, reading) {
+  const pct = reading && reading.load_pct != null
+    ? reading.load_pct
+    : (point.load_pct != null ? point.load_pct : point.load);
+  return {
+    ...point,
+    load_pct: pct,
+    load: reading ? readingWatts(reading) : wattsFromPct(pct),
+  };
+}
+
+function typicalStep(samples) {
+  if (!samples || samples.length < 3) return 2;
+  const dts = [];
+  for (let i = 1; i < samples.length; i += 1) {
+    const dt = samples[i].t - samples[i - 1].t;
+    if (dt > 0 && dt < 3600) dts.push(dt);
+  }
+  if (!dts.length) return 2;
+  dts.sort((a, b) => a - b);
+  return dts[Math.floor(dts.length / 2)];
+}
+
+function gapLimit(samples) {
+  const poll = Number(state && state.settings && state.settings.poll_seconds) || 2;
+  return Math.max(12, poll * 5, typicalStep(samples) * 5);
+}
+
+function reloadLiveHistory() {
+  clearTimeout(historyReloadTimer);
+  historyReloadTimer = setTimeout(() => loadHistory(), 80);
+}
+
 async function loadHistory(spanMin) {
   const need = Math.min(1440, Math.max(minutes, Number(spanMin) || 0, historyMinutes));
   historyMinutes = need;
   const response = await fetch(`/api/history?minutes=${need}`);
   const data = await response.json();
-  points = data.points || [];
+  points = (data.points || []).map((point) => asChartPoint(point));
   drawChart();
   drawSpark();
 }
@@ -1399,16 +1451,15 @@ function lamp(node, active, tone, text) {
 }
 
 function pushPoint(reading) {
-  const point = {
+  const point = asChartPoint({
     t: reading.updated_at,
     in: reading.input_v,
     out: reading.output_v,
-    load: reading.load_pct,
     batt: reading.battery_v,
     soc: reading.battery_pct,
     hz: reading.frequency,
     temp: reading.temperature,
-  };
+  }, reading);
   if (!points.length || points[points.length - 1].t !== point.t) {
     points.push(point);
     const keep = Math.max(minutes, historyMinutes, Math.ceil(sparkView.window / 60)) * 60;
@@ -1498,13 +1549,13 @@ function refreshSparkNote() {
   const live = {
     in: reading.input_v,
     out: reading.output_v,
-    load: reading.load_pct,
+    load: readingWatts(reading),
     batt: reading.battery_v,
     soc: reading.battery_pct,
     hz: reading.frequency,
     temp: reading.temperature,
   };
-  node.textContent = sparkLines().map((line) => `${line.name} ${fixed(live[line.key], 1)} ${line.unit}`).join(" · ");
+  node.textContent = sparkLines().map((line) => `${line.name} ${fixed(live[line.key], line.unit === "Вт" || line.unit === "%" ? 0 : 1)} ${line.unit}`).join(" · ");
 }
 
 function resetSpark() {
@@ -1635,7 +1686,7 @@ function tickSpark(ts) {
   const liveTarget = reading ? {
     in: reading.input_v,
     out: reading.output_v,
-    load: reading.load_pct,
+    load: readingWatts(reading),
     batt: reading.battery_v,
     soc: reading.battery_pct,
     hz: reading.frequency,
@@ -1673,8 +1724,10 @@ function drawSpark() {
   if (sparkView.follow && data.length && state && state.reading) {
     const head = { t: span.end, ...sparkEase.live };
     const last = data[data.length - 1];
-    if (head.t > last.t + 0.04) data.push(head);
-    else Object.assign(last, head, { t: last.t });
+    if (head.t <= last.t + gapLimit(data)) {
+      if (head.t > last.t + 0.04) data.push(head);
+      else Object.assign(last, head, { t: last.t });
+    }
   }
   drawLines(canvas, data, lines, {
     pad: 10,
@@ -1685,6 +1738,7 @@ function drawSpark() {
     smooth: true,
     perUnit: true,
     ticks: true,
+    gap: gapLimit(data),
   });
 }
 
@@ -1702,6 +1756,7 @@ function drawChart(refreshLegend = true) {
     axis: true,
     unit: spec.unit,
     digits: series === "load" || series === "charge" ? 0 : 1,
+    gap: gapLimit(points),
   });
 }
 
@@ -1759,6 +1814,20 @@ function lineScale(data, lines) {
     group.min = eased.min;
     group.max = eased.max;
   });
+  return groups;
+}
+
+function splitByGap(samples, limit) {
+  const groups = [];
+  let cur = [];
+  samples.forEach((point) => {
+    if (cur.length && point.t - cur[cur.length - 1].t > limit) {
+      groups.push(cur);
+      cur = [];
+    }
+    cur.push(point);
+  });
+  if (cur.length) groups.push(cur);
   return groups;
 }
 
@@ -1904,59 +1973,62 @@ function drawLines(canvas, data, lines, options) {
       ctx.fillText(clockTime(t).slice(0, 5), Math.max(left, x - 16), height - 6);
     }
   }
+  const gap = Number(options.gap) || 5;
   lines.forEach((line) => {
     const samples = data.filter((point) => point[line.key] != null);
-    if (samples.length < 2) return;
-    const pts = samples.map((point) => ({
-      x: xOf(point.t),
-      y: yOfValue(point[line.key], line.unit),
-    }));
-    const first = pts[0];
-    const last = pts[pts.length - 1];
-    const fill = ctx.createLinearGradient(0, pad, 0, pad + plotH);
-    fill.addColorStop(0, hexAlpha(line.color, 0.22));
-    fill.addColorStop(1, hexAlpha(line.color, 0.01));
-    ctx.beginPath();
-    ctx.moveTo(first.x, first.y);
-    if (options.smooth) {
-      for (let i = 0; i < pts.length - 1; i += 1) {
-        const p0 = pts[Math.max(0, i - 1)];
-        const p1 = pts[i];
-        const p2 = pts[i + 1];
-        const p3 = pts[Math.min(pts.length - 1, i + 2)];
-        ctx.bezierCurveTo(
-          p1.x + (p2.x - p0.x) / 6,
-          p1.y + (p2.y - p0.y) / 6,
-          p2.x - (p3.x - p1.x) / 6,
-          p2.y - (p3.y - p1.y) / 6,
-          p2.x,
-          p2.y,
-        );
-      }
-    } else {
-      pts.slice(1).forEach((pt) => ctx.lineTo(pt.x, pt.y));
-    }
-    ctx.lineTo(last.x, pad + plotH);
-    ctx.lineTo(first.x, pad + plotH);
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.lineWidth = 2.4;
-    ctx.strokeStyle = line.color;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.shadowColor = hexAlpha(line.color, 0.35);
-    ctx.shadowBlur = 8;
-    if (options.smooth) strokeSmooth(ctx, pts);
-    else {
+    splitByGap(samples, gap).forEach((chunk) => {
+      if (chunk.length < 2) return;
+      const pts = chunk.map((point) => ({
+        x: xOf(point.t),
+        y: yOfValue(point[line.key], line.unit),
+      }));
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      const fill = ctx.createLinearGradient(0, pad, 0, pad + plotH);
+      fill.addColorStop(0, hexAlpha(line.color, 0.22));
+      fill.addColorStop(1, hexAlpha(line.color, 0.01));
       ctx.beginPath();
-      pts.forEach((pt, index) => {
-        if (index === 0) ctx.moveTo(pt.x, pt.y);
-        else ctx.lineTo(pt.x, pt.y);
-      });
-      ctx.stroke();
-    }
-    ctx.shadowBlur = 0;
+      ctx.moveTo(first.x, first.y);
+      if (options.smooth) {
+        for (let i = 0; i < pts.length - 1; i += 1) {
+          const p0 = pts[Math.max(0, i - 1)];
+          const p1 = pts[i];
+          const p2 = pts[i + 1];
+          const p3 = pts[Math.min(pts.length - 1, i + 2)];
+          ctx.bezierCurveTo(
+            p1.x + (p2.x - p0.x) / 6,
+            p1.y + (p2.y - p0.y) / 6,
+            p2.x - (p3.x - p1.x) / 6,
+            p2.y - (p3.y - p1.y) / 6,
+            p2.x,
+            p2.y,
+          );
+        }
+      } else {
+        pts.slice(1).forEach((pt) => ctx.lineTo(pt.x, pt.y));
+      }
+      ctx.lineTo(last.x, pad + plotH);
+      ctx.lineTo(first.x, pad + plotH);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = line.color;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.shadowColor = hexAlpha(line.color, 0.35);
+      ctx.shadowBlur = 8;
+      if (options.smooth) strokeSmooth(ctx, pts);
+      else {
+        ctx.beginPath();
+        pts.forEach((pt, index) => {
+          if (index === 0) ctx.moveTo(pt.x, pt.y);
+          else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+    });
   });
   const plot = {
     data, lines, min, max, left, pad, plotW, plotH,
@@ -2009,12 +2081,17 @@ function paintCrosshair(ctx, plot, x) {
   ctx.restore();
 }
 
+function lineDigits(line, unit) {
+  const suffix = (line && line.unit) || unit || "";
+  return suffix === "Вт" || suffix === "%" ? 0 : 1;
+}
+
 function plotTipHtml(point, lines, unit) {
   const rows = lines.map((line) => {
     const value = point[line.key];
     if (value == null) return "";
     const suffix = line.unit || unit || "";
-    return `<div><i style="background:${escapeAttr(line.color)}"></i>${escapeHtml(line.name)} <b>${escapeHtml(String(fixed(value, 1)))}</b> ${escapeHtml(suffix)}</div>`;
+    return `<div><i style="background:${escapeAttr(line.color)}"></i>${escapeHtml(line.name)} <b>${escapeHtml(String(fixed(value, lineDigits(line, unit))))}</b> ${escapeHtml(suffix)}</div>`;
   }).join("");
   return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}`;
 }
@@ -2048,7 +2125,7 @@ function hoverChart(event) {
   chartHoverX = event.clientX - rect.left;
   const point = nearestPoint(plot, chartHoverX);
   if (!point) return;
-  const bits = plot.lines.map((line) => `${line.name} ${fixed(point[line.key], 1)} ${line.unit || plot.unit}`);
+  const bits = plot.lines.map((line) => `${line.name} ${fixed(point[line.key], lineDigits(line, plot.unit))} ${line.unit || plot.unit}`);
   $("chartTip").textContent = `${clockTime(point.t)}  ·  ${bits.join("   ")}`;
   showPlotTip(event, plotTipHtml(point, plot.lines, plot.unit));
   drawChart(false);

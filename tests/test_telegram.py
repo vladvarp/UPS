@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from ups.monitor import SIMULATIONS, _public_settings, _validate
+from ups.monitor import SIMULATIONS, _decimate, _public_settings, _validate
 from ups.notify_art import _fit_title, card_title, notify_image
 from ups.telegram import (
     TOKEN_RE,
@@ -302,6 +302,15 @@ class ReportTests(unittest.TestCase):
         self.assertIsNotNone(host.global_patch)
         self.assertTrue(host.global_patch["fault"]["on"])
         self.assertEqual(host.chat_payloads, [])
+
+    def test_history_decimate_keeps_recent_run(self):
+        old = [{"t": float(i), "in": 220.0} for i in range(800)]
+        gap = [{"t": 2000.0 + i, "in": 210.0} for i in range(80)]
+        out = _decimate(old + gap, 200)
+        self.assertLessEqual(len(out), 200)
+        self.assertGreaterEqual(out[-1]["t"], 2070)
+        self.assertTrue(any(point["t"] >= 2000 for point in out[-80:]))
+        self.assertLess(out[-90]["t"], 2000)
 
     def test_close_notice_skips_when_bot_is_off(self):
         class Host:
