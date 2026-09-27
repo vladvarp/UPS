@@ -15,9 +15,15 @@ SRCCOPY = 0x00CC0020
 BI_RGB = 0
 DIB_RGB_COLORS = 0
 SW_HIDE = 0
+SW_SHOWMINIMIZED = 2
+SW_SHOWMAXIMIZED = 3
 SW_SHOWNOACTIVATE = 4
 SW_SHOWMINNOACTIVE = 7
 SW_RESTORE = 9
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 HWND_TOP = 0
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
@@ -55,6 +61,8 @@ user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowRect.restype = wintypes.BOOL
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetClientRect.restype = wintypes.BOOL
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.GetSystemMetrics.restype = ctypes.c_int
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -88,6 +96,10 @@ class WINDOWPLACEMENT(ctypes.Structure):
     ]
 
 
+user32.GetWindowPlacement.argtypes = [wintypes.HWND, ctypes.POINTER(WINDOWPLACEMENT)]
+user32.GetWindowPlacement.restype = wintypes.BOOL
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [
         ("cbSize", ctypes.c_uint32),
@@ -95,6 +107,67 @@ class MONITORINFO(ctypes.Structure):
         ("rcWork", wintypes.RECT),
         ("dwFlags", ctypes.c_uint32),
     ]
+
+
+def saved_window_geom(settings: dict) -> dict:
+    width = _int_or(settings.get("window_width"), DEFAULT_W)
+    height = _int_or(settings.get("window_height"), DEFAULT_H)
+    width = max(960, min(width, 8000))
+    height = max(640, min(height, 5000))
+    x = settings.get("window_x")
+    y = settings.get("window_y")
+    has_pos = x is not None and y is not None
+    if has_pos:
+        x, y = _clamp_geom(_int_or(x, 0), _int_or(y, 0), width, height)
+    return {
+        "width": width,
+        "height": height,
+        "x": x if has_pos else None,
+        "y": y if has_pos else None,
+        "maximized": bool(settings.get("window_maximized")),
+    }
+
+
+def read_window_geom(window) -> dict | None:
+    hwnd = hwnd_from_webview(window)
+    if not hwnd:
+        return None
+    place = WINDOWPLACEMENT()
+    place.length = ctypes.sizeof(WINDOWPLACEMENT)
+    if not user32.GetWindowPlacement(hwnd, ctypes.byref(place)):
+        return None
+    rect = place.rcNormalPosition
+    width = int(rect.right - rect.left)
+    height = int(rect.bottom - rect.top)
+    if width < 200 or height < 160:
+        return None
+    x, y = _clamp_geom(int(rect.left), int(rect.top), width, height)
+    return {
+        "window_x": x,
+        "window_y": y,
+        "window_width": max(960, min(width, 8000)),
+        "window_height": max(640, min(height, 5000)),
+        "window_maximized": int(place.showCmd) == SW_SHOWMAXIMIZED,
+    }
+
+
+def _int_or(value, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _clamp_geom(x: int, y: int, width: int, height: int) -> tuple[int, int]:
+    vx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+    vy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+    vw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+    vh = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    if vw <= 0 or vh <= 0:
+        return x, y
+    x = min(max(x, vx - width + 80), vx + vw - 80)
+    y = min(max(y, vy), vy + vh - 80)
+    return x, y
 
 
 def hwnd_from_webview(window) -> int | None:

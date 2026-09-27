@@ -3,10 +3,18 @@ const $ = (id) => document.getElementById(id);
 let state = null;
 let points = [];
 let minutes = 60;
+let historyMinutes = 60;
 let series = "voltage";
 let hiddenLines = {};
 let chartHoverX = null;
 let sparkHoverX = null;
+let sparkOn = { in: true, out: true };
+let sparkView = { window: 900, follow: true, end: 0 };
+let sparkEase = { units: {}, live: {}, shown: {}, lastT: 0, at: 0 };
+let sparkDrag = null;
+let sparkRaf = 0;
+let chartPrefsReady = false;
+let chartSaveTimer = 0;
 let audioCtx = null;
 let wasOnBattery = false;
 let lastVoltRank = 0;
@@ -15,34 +23,140 @@ let sessionIn = { min: null, max: null };
 let reportKind = "summary";
 let reportDays = [];
 let reportDate = "";
+let alertReady = false;
+let lastEventT = 0;
+let lastAlarmKey = "";
+let notices = [];
+let noticeUnread = 0;
+let noticeTimer = 0;
+let simCode = "";
+let simUntil = 0;
+let lastAlertCode = "";
+
+const ALERT_TITLES = {
+  on_battery: "Сеть пропала",
+  on_battery_clear: "Сеть вернулась",
+  battery_low: "Батарея садится",
+  battery_low_clear: "Батарея в норме",
+  fault: "Неисправность",
+  fault_clear: "Авария снята",
+  link_lost: "Нет связи с ИБП",
+  battery_loose: "Батареи отключены",
+  battery_loose_clear: "Пакет в норме",
+  battery_swap: "Пакет сменился",
+  voltage_low: "Сеть понижена",
+  voltage_high: "Сеть повышена",
+  voltage_crit_low: "Сеть слишком низкая",
+  voltage_crit_high: "Сеть слишком высокая",
+  voltage_low_clear: "Сеть в норме",
+  voltage_high_clear: "Сеть в норме",
+  voltage_crit_low_clear: "Спад снят",
+  voltage_crit_high_clear: "Скачок снят",
+  startup: "UPS запущен",
+  shutdown: "UPS закрыт",
+  pc_shutdown: "Выключение ПК",
+  pc_off: "Выключить ПК",
+  pc_reboot: "Перезагрузка",
+  pc_sleep: "Сон",
+  pc_hibernate: "Гибернация",
+  app_restart: "Перезапуск UPS",
+};
+
+const LINE_COLORS = {
+  in: "#e0b06a",
+  out: "#4de2ff",
+  load: "#ff7a3d",
+  batt: "#3dbe7a",
+  soc: "#b388ff",
+  hz: "#dce7ff",
+  temp: "#e15d4c",
+};
 
 const SERIES = {
   voltage: {
     unit: "В",
     lines: [
-      { key: "in", color: "#e0b06a", name: "вход" },
-      { key: "out", color: "#8fd0ff", name: "выход" },
+      { key: "in", color: LINE_COLORS.in, name: "вход" },
+      { key: "out", color: LINE_COLORS.out, name: "выход" },
     ],
   },
-  load: { unit: "%", lines: [{ key: "load", color: "#e0b06a", name: "нагрузка" }] },
-  battery: { unit: "В", lines: [{ key: "batt", color: "#3dbe7a", name: "батарея" }] },
-  freq: { unit: "Гц", lines: [{ key: "hz", color: "#f0d7ad", name: "частота" }] },
-  temp: { unit: "°C", lines: [{ key: "temp", color: "#e15d4c", name: "температура" }] },
+  load: { unit: "%", lines: [{ key: "load", color: LINE_COLORS.load, name: "нагрузка" }] },
+  battery: { unit: "В", lines: [{ key: "batt", color: LINE_COLORS.batt, name: "батарея" }] },
+  charge: { unit: "%", lines: [{ key: "soc", color: LINE_COLORS.soc, name: "заряд" }] },
+  freq: { unit: "Гц", lines: [{ key: "hz", color: LINE_COLORS.hz, name: "частота" }] },
+  temp: { unit: "°C", lines: [{ key: "temp", color: LINE_COLORS.temp, name: "температура" }] },
 };
+
+const TG_EVENTS = [
+  { group: "Сеть", items: [
+    { code: "on_battery", title: "Сеть пропала" },
+    { code: "on_battery_clear", title: "Сеть вернулась" },
+    { code: "voltage_low", title: "Сеть понижена" },
+    { code: "voltage_low_clear", title: "Понижение снято" },
+    { code: "voltage_high", title: "Сеть повышена" },
+    { code: "voltage_high_clear", title: "Повышение снято" },
+    { code: "voltage_crit_low", title: "Сеть слишком низкая" },
+    { code: "voltage_crit_low_clear", title: "Спад снят" },
+    { code: "voltage_crit_high", title: "Сеть слишком высокая" },
+    { code: "voltage_crit_high_clear", title: "Скачок снят" },
+  ]},
+  { group: "Батарея", items: [
+    { code: "battery_low", title: "Батарея садится" },
+    { code: "battery_low_clear", title: "Батарея в норме" },
+    { code: "battery_loose", title: "Батареи отключены" },
+    { code: "battery_loose_clear", title: "Пакет в норме" },
+    { code: "battery_swap", title: "Пакет сменился" },
+  ]},
+  { group: "ИБП", items: [
+    { code: "fault", title: "Неисправность" },
+    { code: "fault_clear", title: "Авария снята" },
+    { code: "link_lost", title: "Нет связи с ИБП" },
+  ]},
+  { group: "ПК", items: [
+    { code: "pc_shutdown", title: "Отсчёт выключения" },
+    { code: "pc_off", title: "Выключить ПК" },
+    { code: "pc_reboot", title: "Перезагрузка" },
+    { code: "pc_sleep", title: "Сон" },
+    { code: "pc_hibernate", title: "Гибернация" },
+  ]},
+  { group: "Программа", items: [
+    { code: "startup", title: "UPS запущен" },
+    { code: "shutdown", title: "UPS закрыт" },
+    { code: "app_restart", title: "Перезапуск UPS" },
+  ]},
+];
+
+const SPARK_LINES = [
+  { key: "in", color: LINE_COLORS.in, name: "вход", unit: "В" },
+  { key: "out", color: LINE_COLORS.out, name: "выход", unit: "В" },
+  { key: "load", color: LINE_COLORS.load, name: "нагрузка", unit: "%" },
+  { key: "batt", color: LINE_COLORS.batt, name: "батарея", unit: "В" },
+  { key: "soc", color: LINE_COLORS.soc, name: "заряд", unit: "%" },
+  { key: "hz", color: LINE_COLORS.hz, name: "частота", unit: "Гц" },
+  { key: "temp", color: LINE_COLORS.temp, name: "температура", unit: "°C" },
+];
 
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", () => showTab(button.dataset.tab));
 });
 $("openSettings").addEventListener("click", openSettings);
 $("closeSettings").addEventListener("click", () => $("settings").close());
+$("openLab").addEventListener("click", openLab);
+$("closeLab").addEventListener("click", () => $("labDialog").close());
+$("stopSim").addEventListener("click", stopSim);
+$("schStopSim").addEventListener("click", stopSim);
+$("schCancelOff").addEventListener("click", cancelShutdown);
 $("settingsForm").addEventListener("submit", saveSettings);
 $("telegramForm").addEventListener("submit", saveTelegram);
 $("tgPill").addEventListener("click", () => showTab("telegram"));
 $("gateRescan").addEventListener("click", () => command("rescan"));
-$("gateDemo").addEventListener("click", () => command("demo"));
+$("gateScan").addEventListener("click", () => openScan(true));
+if ($("devScan")) $("devScan").addEventListener("click", () => openScan(true));
+$("closeScan").addEventListener("click", () => $("scanDialog").close());
+$("scanAgain").addEventListener("click", () => openScan(true));
 $("leaveDemo").addEventListener("click", () => command("live"));
 $("btnSimulate").addEventListener("click", () => command("simulate"));
-$("btnCancelShutdown").addEventListener("click", () => command("cancel_shutdown"));
+$("btnCancelShutdown").addEventListener("click", cancelShutdown);
 $("tgNewPair").addEventListener("click", () => telegramAction("telegram_new_pair"));
 $("tgUnlink").addEventListener("click", () => telegramAction("telegram_unlink"));
 $("repSummary").addEventListener("click", () => setReportKind("summary"));
@@ -64,11 +178,41 @@ $("quitDialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   sendQuit("stay");
 });
+$("noticeBtn").addEventListener("click", toggleInbox);
+$("noticeClear").addEventListener("click", clearInbox);
+$("noticeList").addEventListener("click", (event) => {
+  const row = event.target.closest("li[data-index]");
+  if (!row) return;
+  const item = notices[Number(row.dataset.index)];
+  if (item) openAlert(item, { keep: true });
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    if ($("alertModal") && !$("alertModal").hidden) closeAlert();
+    if ($("noticeInbox") && !$("noticeInbox").hidden) $("noticeInbox").hidden = true;
+  }
+});
+$("eventList").addEventListener("click", (event) => {
+  const row = event.target.closest("li[data-code]");
+  if (!row) return;
+  openAlert({
+    code: row.dataset.code,
+    level: row.dataset.level,
+    message: row.dataset.message,
+    t: Number(row.dataset.t) || Date.now() / 1000,
+  });
+});
 window.showQuitDialog = showQuitDialog;
 window.prepareForScreenshot = prepareForScreenshot;
 window.restoreAfterScreenshot = restoreAfterScreenshot;
-["tgNotifyPower", "tgNotifyAlerts", "tgDigest"].forEach((id) => {
-  $(id).addEventListener("change", saveTelegramFlags);
+$("tgDigest").addEventListener("change", saveTelegramFlags);
+$("tgEventList").addEventListener("change", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  const row = input.closest(".tg-event");
+  if (row) row.classList.toggle("is-off", !row.querySelector('[data-kind="on"]').checked);
+  input.blur();
+  saveTelegramFlags();
 });
 $("tgHourUp").addEventListener("click", () => nudgeClock("hour", 1));
 $("tgHourDown").addEventListener("click", () => nudgeClock("hour", -1));
@@ -90,6 +234,7 @@ $("ranges").addEventListener("click", (event) => {
   minutes = Number(button.dataset.minutes);
   document.querySelectorAll("#ranges button").forEach((item) => item.classList.toggle("on", item === button));
   loadHistory();
+  persistChartPrefs();
 });
 $("series").addEventListener("click", (event) => {
   const button = event.target.closest("button");
@@ -97,6 +242,7 @@ $("series").addEventListener("click", (event) => {
   series = button.dataset.series;
   document.querySelectorAll("#series button").forEach((item) => item.classList.toggle("on", item === button));
   drawChart();
+  persistChartPrefs();
 });
 $("chart").addEventListener("mousemove", hoverChart);
 $("chart").addEventListener("mouseleave", () => {
@@ -113,6 +259,7 @@ $("chart").addEventListener("wheel", (event) => {
   minutes = order[next];
   document.querySelectorAll("#ranges button").forEach((item) => item.classList.toggle("on", Number(item.dataset.minutes) === minutes));
   loadHistory();
+  persistChartPrefs();
 }, { passive: false });
 $("chartLegend").addEventListener("click", (event) => {
   const button = event.target.closest("button");
@@ -123,16 +270,38 @@ $("chartLegend").addEventListener("click", (event) => {
 $("spark").addEventListener("mousemove", hoverSpark);
 $("spark").addEventListener("mouseleave", () => {
   sparkHoverX = null;
-  if (state && state.reading) {
-    $("sparkNote").textContent = `вход ${fixed(state.reading.input_v, 1)} · выход ${fixed(state.reading.output_v, 1)} В`;
-  }
+  refreshSparkNote();
   drawSpark();
 });
+$("spark").addEventListener("wheel", onSparkWheel, { passive: false });
+$("spark").addEventListener("dblclick", resetSpark);
+$("spark").addEventListener("pointerdown", onSparkDown);
+window.addEventListener("pointermove", onSparkMove);
+window.addEventListener("pointerup", onSparkUp);
+$("sparkZoomIn").addEventListener("click", () => zoomSpark(1 / 1.35));
+$("sparkZoomOut").addEventListener("click", () => zoomSpark(1.35));
+$("sparkPanLeft").addEventListener("click", () => panSpark(-0.35));
+$("sparkPanRight").addEventListener("click", () => panSpark(0.35));
+$("sparkReset").addEventListener("click", resetSpark);
+$("sparkLines").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-key]");
+  if (!button) return;
+  const key = button.dataset.key;
+  const on = SPARK_LINES.filter((line) => sparkOn[line.key]);
+  if (sparkOn[key] && on.length < 2) return;
+  sparkOn[key] = !sparkOn[key];
+  refreshSparkUi();
+  persistChartPrefs();
+});
 syncPackCells(2, 1);
+refreshSparkUi();
+if (!sparkRaf) sparkRaf = requestAnimationFrame(tickSpark);
 window.addEventListener("resize", () => {
   drawChart();
   drawSpark();
+  layoutSchemeTraces();
 });
+requestAnimationFrame(layoutSchemeTraces);
 document.addEventListener("pointerdown", () => {
   if (!audioCtx) audioCtx = new AudioContext();
   if (audioCtx.state === "suspended") audioCtx.resume();
@@ -151,6 +320,11 @@ loadEvents();
 let pulling = false;
 pull();
 setInterval(pull, 1000);
+setInterval(() => {
+  if (!state || !state.reading) return;
+  if (!simUntil && (state.reading.shutdown_seconds == null)) return;
+  paint(state.reading, state);
+}, 250);
 
 async function pull() {
   if (pulling) return;
@@ -176,8 +350,10 @@ function showTab(name) {
   if (name === "reports") loadReport();
 }
 
-async function loadHistory() {
-  const response = await fetch(`/api/history?minutes=${minutes}`);
+async function loadHistory(spanMin) {
+  const need = Math.min(1440, Math.max(minutes, Number(spanMin) || 0, historyMinutes));
+  historyMinutes = need;
+  const response = await fetch(`/api/history?minutes=${need}`);
   const data = await response.json();
   points = data.points || [];
   drawChart();
@@ -191,18 +367,18 @@ async function loadEvents() {
   const events = data.events || [];
   list.innerHTML = events.length
     ? events.map((item) => `
-        <li class="${escapeAttr(item.level)}">
+        <li class="${escapeAttr(item.level)}" data-code="${escapeAttr(item.code || "")}" data-level="${escapeAttr(item.level || "")}" data-message="${escapeAttr(item.message || "")}" data-t="${escapeAttr(item.t || "")}">
           <time>${clockTime(item.t)}</time>
           <p>${escapeHtml(item.message)}</p>
         </li>`).join("")
     : `<li class="empty">Пока событий нет.</li>`;
 }
 
-async function command(action) {
+async function command(action, extra) {
   const response = await fetch("/api/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ...(extra || {}) }),
   });
   const data = await response.json();
   toast(data.message || "Готово");
@@ -211,6 +387,113 @@ async function command(action) {
   }
   return data;
 }
+
+async function openScan(force) {
+  const dialog = $("scanDialog");
+  const box = $("scanGroups");
+  const note = $("scanMsg");
+  if (!dialog || !box) return;
+  if (dialog.open && !force) {
+    dialog.close();
+    return;
+  }
+  if (!dialog.open) dialog.show();
+  box.innerHTML = `<p class="lead">Сканирую HID и COM…</p>`;
+  if (note) note.textContent = "";
+  const data = await fetch("/api/ports").then((item) => item.json()).catch(() => ({}));
+  if (note) note.textContent = data.message || "";
+  const hid = data.hid || [];
+  const com = data.com || [];
+  const hidHtml = hid.length
+    ? hid.map((item) => `
+        <button type="button" class="${item.status === "отвечает" || item.status === "подключено сейчас" ? "ok" : ""}" data-kind="hid" data-path="${escapeAttr(item.path || "")}">
+          ${escapeHtml(item.label || "HID")} · ${escapeHtml(item.status || "")}
+        </button>`).join("")
+    : `<p class="lead">USB HID ИБП не найден.</p>`;
+  const comHtml = com.length
+    ? com.map((item) => `
+        <button type="button" class="${item.likely ? "warn" : ""}" data-kind="com" data-port="${escapeAttr(item.device || "")}">
+          ${escapeHtml(item.device || "COM")} · ${escapeHtml(item.description || "")} · ${escapeHtml(item.status || "")}
+        </button>`).join("")
+    : `<p class="lead">COM-портов нет. Для Mega USB они не нужны.</p>`;
+  box.innerHTML = `
+    <section class="lab-group">
+      <h3>USB HID</h3>
+      <div>${hidHtml}</div>
+    </section>
+    <section class="lab-group">
+      <h3>COM-порты</h3>
+      <div>${comHtml}</div>
+    </section>`;
+}
+
+$("scanGroups") && $("scanGroups").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-kind]");
+  if (!button) return;
+  button.disabled = true;
+  const kind = button.dataset.kind;
+  const port = kind === "com" ? (button.dataset.port || "") : "";
+  const settings = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serial_port: port }),
+  }).then((item) => item.json()).catch(() => ({}));
+  if (settings && settings.ok === false) {
+    toast(settings.message || "Порт не выбран");
+    button.disabled = false;
+    return;
+  }
+  await command("rescan");
+  button.disabled = false;
+  openScan(true);
+});
+
+async function openLab() {
+  const dialog = $("labDialog");
+  const box = $("labGroups");
+  if (!dialog || !box) return;
+  if (!box.dataset.ready) {
+    const data = await fetch("/api/simulations").then((item) => item.json()).catch(() => ({}));
+    const items = data.items || [];
+    const groups = [];
+    items.forEach((item) => {
+      let group = groups.find((entry) => entry.name === item.group);
+      if (!group) {
+        group = { name: item.group, items: [] };
+        groups.push(group);
+      }
+      group.items.push(item);
+    });
+    box.innerHTML = groups.map((group) => `
+      <section class="lab-group">
+        <h3>${escapeHtml(group.name)}</h3>
+        <div>
+          ${group.items.map((item) => `
+            <button type="button" class="${escapeAttr(item.level || "")}" data-code="${escapeAttr(item.code)}">
+              ${escapeHtml(item.title)}
+            </button>`).join("")}
+        </div>
+      </section>`).join("");
+    box.dataset.ready = "1";
+  }
+  if (dialog.open) {
+    dialog.close();
+    return;
+  }
+  dialog.show();
+}
+
+$("labGroups").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-code]");
+  if (!button) return;
+  button.disabled = true;
+  const data = await command("simulate_event", { code: button.dataset.code });
+  button.disabled = false;
+  if (data && data.ok) {
+    loadEvents();
+    startSim(button.dataset.code);
+  }
+});
 
 async function openSettings() {
   const response = await fetch("/api/settings");
@@ -243,18 +526,125 @@ async function saveTelegram(event) {
   }
 }
 
+function defaultEventSound(code) {
+  return !String(code).endsWith("_clear") && code !== "startup";
+}
+
+function telegramEventsPayload() {
+  const events = {};
+  TG_EVENTS.forEach((group) => {
+    group.items.forEach((item) => {
+      const send = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="on"]`);
+      const sound = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="sound"]`);
+      events[item.code] = {
+        on: send ? send.checked : true,
+        sound: sound ? sound.checked : defaultEventSound(item.code),
+      };
+    });
+  });
+  return events;
+}
+
+function renderTelegramEvents(settings) {
+  const box = $("tgEventList");
+  if (!box) return;
+  const stored = (settings && settings.telegram_events) || {};
+  if (!box.dataset.ready) {
+    box.innerHTML = TG_EVENTS.map((group) => `
+      <section class="tg-event-group">
+        <h4>${escapeHtml(group.group)}</h4>
+        ${group.items.map((item) => `
+          <div class="tg-event" data-code="${escapeAttr(item.code)}">
+            <em>${escapeHtml(item.title)}</em>
+            <label class="switch" title="Отправлять">
+              <input type="checkbox" data-tg-ev="${escapeAttr(item.code)}" data-kind="on">
+              <span></span>
+            </label>
+            <label class="switch sound" title="Со звуком">
+              <input type="checkbox" data-tg-ev="${escapeAttr(item.code)}" data-kind="sound">
+              <span></span>
+            </label>
+          </div>`).join("")}
+      </section>`).join("");
+    box.dataset.ready = "1";
+  }
+  TG_EVENTS.forEach((group) => {
+    group.items.forEach((item) => {
+      const pref = stored[item.code];
+      const on = pref ? pref.on !== false : true;
+      const sound = pref ? Boolean(pref.sound) : defaultEventSound(item.code);
+      const sendBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="on"]`);
+      const soundBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="sound"]`);
+      if (sendBox) sendBox.checked = on;
+      if (soundBox) soundBox.checked = sound;
+      const row = sendBox && sendBox.closest(".tg-event");
+      if (row) row.classList.toggle("is-off", !on);
+    });
+  });
+}
+
 async function saveTelegramFlags() {
   syncDigestTime();
   await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      telegram_notify_power: $("tgNotifyPower").checked,
-      telegram_notify_alerts: $("tgNotifyAlerts").checked,
       telegram_digest: $("tgDigest").checked,
       telegram_digest_time: digestClockValue(),
+      telegram_events: telegramEventsPayload(),
     }),
   });
+}
+
+function persistChartPrefs() {
+  if (!chartPrefsReady) return;
+  clearTimeout(chartSaveTimer);
+  chartSaveTimer = setTimeout(() => {
+    fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        spark_lines: SPARK_LINES.filter((line) => sparkOn[line.key]).map((line) => line.key),
+        spark_window: Math.round(sparkView.window),
+        chart_minutes: minutes,
+        chart_series: series,
+      }),
+    }).catch(() => {});
+  }, 400);
+}
+
+function applyChartPrefs(settings) {
+  if (chartPrefsReady || !settings) return;
+  const lines = settings.spark_lines;
+  if (Array.isArray(lines) && lines.length) {
+    const allowed = new Set(SPARK_LINES.map((line) => line.key));
+    sparkOn = Object.fromEntries(SPARK_LINES.map((line) => [line.key, false]));
+    lines.forEach((key) => {
+      if (allowed.has(key)) sparkOn[key] = true;
+    });
+    if (!SPARK_LINES.some((line) => sparkOn[line.key])) {
+      sparkOn.in = true;
+      sparkOn.out = true;
+    }
+  }
+  const win = Number(settings.spark_window);
+  if (win >= 30 && win <= 86400) sparkView.window = win;
+  const mins = Number(settings.chart_minutes);
+  if ([15, 60, 360, 1440].includes(mins)) {
+    minutes = mins;
+    document.querySelectorAll("#ranges button").forEach((item) => {
+      item.classList.toggle("on", Number(item.dataset.minutes) === minutes);
+    });
+  }
+  if (settings.chart_series && SERIES[settings.chart_series]) {
+    series = settings.chart_series;
+    document.querySelectorAll("#series button").forEach((item) => {
+      item.classList.toggle("on", item.dataset.series === series);
+    });
+  }
+  chartPrefsReady = true;
+  refreshSparkUi();
+  if (minutes > historyMinutes) loadHistory(minutes);
 }
 
 function clockPart(id, max) {
@@ -331,19 +721,23 @@ async function saveSettings(event) {
   });
   const data = await response.json();
   $("settingsMsg").textContent = data.message || "";
-  if (data.ok) toast("Настройки сохранены");
+  if (data.ok) {
+    if (data.settings && form.elements.ups_kva && data.settings.ups_kva != null) {
+      form.elements.ups_kva.value = data.settings.ups_kva;
+    }
+    toast("Настройки сохранены");
+  }
 }
 
 function apply(next) {
   const previousMode = state && state.mode;
   state = next;
+  applyChartPrefs(next.settings || {});
   const reading = next.reading;
-  const age = reading ? Date.now() / 1000 - reading.updated_at : 1e9;
-  const fresh = reading && reading.source === "live" && age < 180;
-  const live = next.mode === "live" || next.mode === "demo" || fresh;
+  const live = next.mode === "live" || next.mode === "demo";
   document.body.dataset.power = reading && reading.on_battery ? "battery" : live ? "mains" : "idle";
   $("connPill").textContent = pillText(next);
-  $("connPill").classList.toggle("live", next.mode === "live" || fresh);
+  $("connPill").classList.toggle("live", live);
   $("dashboard").hidden = !live;
   $("gate").hidden = live;
   $("demoBanner").hidden = next.mode !== "demo";
@@ -360,6 +754,7 @@ function apply(next) {
   $("footTime").textContent = `Время работы: ${clock(next.session_seconds || 0)}`;
   paintTelegram(next);
   if (reading) paint(reading, next);
+  syncAlerts(reading, next);
   if (reading && next.mode !== previousMode) loadHistory();
   else if (reading) pushPoint(reading);
   if (previousMode && previousMode !== next.mode) loadEvents();
@@ -412,17 +807,124 @@ function paintTelegram(snapshot) {
 
 function fillTelegramFields() {
   const settings = (state && state.settings) || {};
-  $("tgNotifyPower").checked = settings.telegram_notify_power !== false;
-  $("tgNotifyAlerts").checked = settings.telegram_notify_alerts !== false;
   $("tgDigest").checked = Boolean(settings.telegram_digest);
   setDigestClock(settings.telegram_digest_time || "21:00");
   syncDigestTime();
+  renderTelegramEvents(settings);
   $("tgToken").placeholder = settings.telegram_token_set
     ? "токен уже сохранён — вставьте новый, чтобы заменить"
     : "123456789:AAH…";
 }
 
+function withSim(reading) {
+  if (!simCode || !reading) return reading;
+  const next = { ...reading };
+  const code = simCode;
+  if (code === "on_battery") {
+    next.on_battery = true;
+    next.mains_ok = false;
+    next.mode_label = "Питание от батареи";
+  } else if (code === "on_battery_clear") {
+    next.on_battery = false;
+    next.mains_ok = true;
+  } else if (code === "battery_loose") {
+    next.battery_loose = true;
+  } else if (code === "battery_loose_clear") {
+    next.battery_loose = false;
+  } else if (code === "battery_low") {
+    next.battery_low = true;
+    next.battery_pct = 12;
+  } else if (code === "battery_low_clear") {
+    next.battery_low = false;
+  } else if (code === "battery_swap") {
+    next.battery_swap = { from: 24.0, to: 27.2 };
+  } else if (code === "fault") {
+    next.fault = true;
+    next.mode_label = "Авария";
+  } else if (code === "fault_clear") {
+    next.fault = false;
+  } else if (code === "voltage_low") {
+    next.voltage_state = "low";
+    next.voltage_note = "Симуляция · сеть понижена";
+    next.input_v = 192;
+    next.mains_ok = true;
+    next.on_battery = false;
+    next.avr = true;
+  } else if (code === "voltage_high") {
+    next.voltage_state = "high";
+    next.voltage_note = "Симуляция · сеть повышена";
+    next.input_v = 246;
+    next.mains_ok = true;
+    next.on_battery = false;
+    next.avr = true;
+  } else if (code === "voltage_crit_low") {
+    next.voltage_state = "crit_low";
+    next.voltage_note = "Симуляция · сеть слишком низкая";
+    next.input_v = 172;
+    next.mains_ok = true;
+    next.on_battery = false;
+    next.avr = true;
+  } else if (code === "voltage_crit_high") {
+    next.voltage_state = "crit_high";
+    next.voltage_note = "Симуляция · сеть слишком высокая";
+    next.input_v = 256;
+    next.mains_ok = true;
+    next.on_battery = false;
+    next.avr = true;
+  } else if (code.endsWith("_clear") && code.startsWith("voltage_")) {
+    next.voltage_state = "ok";
+    next.voltage_note = "";
+    next.avr = false;
+  } else if (code === "pc_shutdown") {
+    next.on_battery = true;
+    next.mains_ok = false;
+    next.mode_label = "Питание от батареи";
+    next.shutdown_seconds = simLeft();
+  } else if (code === "pc_off" || code === "pc_reboot") {
+    next.shutdown_seconds = simLeft();
+  } else if (code === "link_lost") {
+    next.mode_label = "Нет связи";
+  }
+  return next;
+}
+
+function simLeft() {
+  if (!simUntil) return 0;
+  return Math.max(0, Math.ceil((simUntil - Date.now()) / 1000));
+}
+
+function startSim(code) {
+  simCode = code || "";
+  const delay = Number(state && state.settings && state.settings.shutdown_delay) || 180;
+  if (code === "pc_shutdown") simUntil = Date.now() + delay * 1000;
+  else if (code === "pc_off" || code === "pc_reboot") simUntil = Date.now() + 20 * 1000;
+  else simUntil = 0;
+  refreshSimUi();
+}
+
+function stopSim() {
+  simCode = "";
+  simUntil = 0;
+  refreshSimUi();
+}
+
+function cancelShutdown() {
+  if (simCode === "pc_shutdown" || simCode === "pc_off" || simCode === "pc_reboot") {
+    stopSim();
+    return;
+  }
+  command("cancel_shutdown");
+}
+
+function refreshSimUi() {
+  const active = Boolean(simCode);
+  if ($("stopSim")) $("stopSim").hidden = !active;
+  if ($("schStopSim")) $("schStopSim").hidden = !active;
+  if (state && state.reading) paint(state.reading, state);
+}
+
 function paint(reading, snapshot) {
+  reading = withSim(reading);
   const settings = snapshot.settings || {};
   const seriesCount = Number(settings.battery_count) || 2;
   const groupCount = Number(settings.battery_groups) || 1;
@@ -435,15 +937,20 @@ function paint(reading, snapshot) {
     sessionIn.max = sessionIn.max == null ? reading.input_v : Math.max(sessionIn.max, reading.input_v);
   }
   $("inV").textContent = fixed(reading.input_v, 1);
+  if ($("schInV")) $("schInV").textContent = reading.input_v == null ? "—" : `${Math.round(reading.input_v)} В`;
   $("inHz").textContent = fixed(reading.frequency, 1);
   $("deltaV").textContent = reading.input_v == null || reading.output_v == null
     ? "—"
     : `${reading.output_v - reading.input_v >= 0 ? "+" : ""}${(reading.output_v - reading.input_v).toFixed(1)} В`;
   $("outV").textContent = fixed(reading.output_v, 1);
+  if ($("schOutV")) $("schOutV").textContent = reading.output_v == null ? "—" : `${Math.round(reading.output_v)} В`;
   $("loadVal").textContent = load == null ? "—" : Math.round(load);
   $("loadVa").textContent = reading.load_w != null ? `≈ ${reading.load_w} Вт` : va == null ? "—" : `≈ ${va} ВА`;
   $("loadRing").style.setProperty("--p", String(Math.max(0, Math.min(100, load || 0))));
-  $("cellCap").textContent = reading.battery_pct == null ? "—" : `${Math.round(reading.battery_pct)}%`;
+  const packLoose = Boolean(reading.battery_loose);
+  $("cellCap").textContent = packLoose
+    ? "снят"
+    : reading.battery_pct == null ? "—" : `${Math.round(reading.battery_pct)}%`;
   $("mBattCell").textContent = reading.battery_v == null ? "—" : `${(reading.battery_v / seriesCount).toFixed(1)} В на банку`;
   $("mHealth").textContent = settings.battery_health == null ? "—" : `здоровье ${settings.battery_health}%`;
   $("mMode").textContent = reading.mode_label || "—";
@@ -456,22 +963,17 @@ function paint(reading, snapshot) {
   const swapped = Boolean(swap && swap.from != null && swap.to != null);
   chip(
     $("factLoose"),
-    reading.battery_loose || swapped,
-    reading.battery_loose
+    packLoose || swapped,
+    packLoose
       ? "Батареи отключены"
       : swapped
         ? `Пакет сменён ${Number(swap.from).toFixed(1)}→${Number(swap.to).toFixed(1)} В`
         : "Пакет на месте",
-    reading.battery_loose ? "bad" : swapped ? "warn" : "on",
+    packLoose ? "bad" : swapped ? "warn" : "on",
   );
   const volt = reading.voltage_state || "ok";
   const voltTone = volt === "crit_low" || volt === "crit_high" ? "bad" : volt === "low" || volt === "high" ? "warn" : "on";
-  const voltLabel = {
-    low: "Вход ниже 200 В",
-    high: "Вход выше 240 В",
-    crit_low: "Вход ниже 180 В",
-    crit_high: "Вход выше 250 В",
-  }[volt];
+  const voltLabel = reading.voltage_note || null;
   chip(
     $("factRange"),
     sessionIn.min != null,
@@ -484,18 +986,47 @@ function paint(reading, snapshot) {
     inCard.classList.toggle("bad-volt", volt === "crit_low" || volt === "crit_high");
   }
   const onBattery = Boolean(reading.on_battery);
-  $("hopBypass").classList.toggle("hot", !onBattery);
-  $("hopBypass").classList.toggle("dim", onBattery);
-  $("hopInverter").classList.toggle("hot", onBattery);
-  $("hopInverter").classList.toggle("dim", !onBattery);
-  const soc = reading.battery_pct == null ? 0 : reading.battery_pct;
-  const fill = soc < 20
-    ? "linear-gradient(#ffd0c8, #e15d4c)"
-    : soc < 50
-      ? "linear-gradient(#ffe3a8, #e6b15c)"
-      : "linear-gradient(#d7ffb0, #3dbe7a)";
+  const shutting = reading.shutdown_seconds != null;
+  const offLeft = shutting ? Math.max(0, Number(reading.shutdown_seconds) || 0) : 0;
+  const voltMark = {
+    low: "LOW V",
+    high: "HIGH V",
+    crit_low: "CRIT LO",
+    crit_high: "CRIT HI",
+  }[volt] || "";
+  if ($("schematic")) {
+    $("schematic").dataset.mode = onBattery ? "battery" : "mains";
+    $("schematic").dataset.avr = reading.avr || voltMark ? "1" : "0";
+    $("schematic").dataset.pack = packLoose ? "loose" : reading.battery_low ? "low" : "ok";
+    $("schematic").dataset.sim = simCode || "";
+    $("schematic").dataset.volt = voltMark ? volt : "ok";
+    $("schematic").dataset.fault = reading.fault ? "1" : "0";
+    $("schematic").dataset.link = simCode === "link_lost" ? "lost" : "ok";
+    $("schematic").dataset.off = shutting ? "1" : "0";
+    layoutSchemeTraces();
+  }
+  if ($("schMode")) {
+    $("schMode").textContent = simCode === "link_lost"
+      ? "NO LINK"
+      : packLoose ? "NO PACK"
+        : voltMark ? voltMark
+          : onBattery ? "INVERT" : "LINE";
+  }
+  if ($("schVolt")) {
+    $("schVolt").hidden = !voltMark;
+    $("schVolt").textContent = voltLabel || voltMark;
+    $("schVolt").className = `scheme-volt ${voltTone}`;
+  }
+  const soc = packLoose ? 0 : (reading.battery_pct == null ? 0 : reading.battery_pct);
+  const fill = packLoose
+    ? "linear-gradient(#4a1c18, #e15d4c)"
+    : soc < 20
+      ? "linear-gradient(#ffd0c8, #e15d4c)"
+      : soc < 50
+        ? "linear-gradient(#ffe3a8, #e6b15c)"
+        : "linear-gradient(#d7ffb0, #3dbe7a)";
   document.querySelectorAll(".bat-fill").forEach((node) => {
-    node.style.height = `${soc}%`;
+    node.style.height = packLoose ? "8%" : `${soc}%`;
     node.style.background = fill;
   });
   $("mBatt").textContent = fixed(reading.battery_v, 1);
@@ -503,26 +1034,23 @@ function paint(reading, snapshot) {
   $("mSoc").textContent = reading.battery_pct == null ? "—" : Math.round(reading.battery_pct);
   $("mDis").textContent = clock(reading.discharge_seconds || 0);
   $("mRun").textContent = runtime(reading.runtime_min);
-  const shutting = reading.shutdown_seconds != null;
+  if ($("schCount")) {
+    $("schCount").hidden = !shutting;
+    if ($("schCountVal")) $("schCountVal").textContent = clock(offLeft);
+    if ($("schCountNote")) {
+      $("schCountNote").textContent = simCode === "pc_reboot" || reading.shutdown_kind === "reboot"
+        ? "перезагрузка"
+        : offLeft <= 0 ? "отсчёт завершён" : "выключение ПК";
+    }
+  }
   $("btnCancelShutdown").hidden = !shutting;
-  const alarm = $("alarmBanner");
-  if (reading.battery_loose) {
-    alarm.hidden = false;
-    alarm.textContent = "Напряжение батареи скачет — похоже, батареи физически отключены от ИБП.";
-  } else if (onBattery) {
-    alarm.hidden = false;
-    alarm.textContent = `Питание от батареи · разряд ${clock(reading.discharge_seconds || 0)} · осталось ${runtime(reading.runtime_min)}`;
-  } else if (reading.fault) {
-    alarm.hidden = false;
-    alarm.textContent = "ИБП сообщил об аварии.";
-  } else if (voltLabel) {
-    alarm.hidden = false;
-    alarm.textContent = `${voltLabel} · сейчас ${fixed(reading.input_v, 1)} В`;
-  } else if (swapped) {
-    alarm.hidden = false;
-    alarm.textContent = `Пакет батарей сменился: ${Number(swap.from).toFixed(1)} → ${Number(swap.to).toFixed(1)} В. Напряжение держится — это не обрыв.`;
-  } else {
-    alarm.hidden = true;
+  $("btnCancelShutdown").textContent = shutting
+    ? `Отменить выключение · ${clock(offLeft)}`
+    : "Отменить выключение ПК";
+  if ($("alertCount")) {
+    const ticking = !$("alertModal").hidden && (lastAlertCode === "pc_shutdown" || lastAlertCode === "pc_off" || lastAlertCode === "pc_reboot");
+    $("alertCount").hidden = !ticking;
+    if (ticking) $("alertCount").textContent = clock(offLeft);
   }
   lamp($("lampLink"), true, "on", snapshot.mode === "live" ? "Связь есть" : "Демонстрация");
   lamp($("lampMode"), true, reading.fault ? "bad" : onBattery ? "warn" : "on", reading.mode_label);
@@ -535,25 +1063,23 @@ function paint(reading, snapshot) {
   lamp($("lampBatt"), reading.battery_low, "bad", "Низкий заряд");
   lamp(
     $("lampLoose"),
-    reading.battery_loose || swapped,
-    reading.battery_loose ? "bad" : swapped ? "warn" : "",
-    reading.battery_loose ? "Пакет снят" : swapped ? "Пакет сменён" : "Пакет",
+    packLoose || swapped,
+    packLoose ? "bad" : swapped ? "warn" : "",
+    packLoose ? "Пакет снят" : swapped ? "Пакет сменён" : "Пакет",
   );
-  lamp($("lampOff"), Boolean(reading.shutdown || shutting), "bad", "Выключение");
+  lamp(
+    $("lampOff"),
+    Boolean(reading.shutdown || shutting),
+    "bad",
+    shutting ? `Выключение · ${clock(offLeft)}` : "Выключение ПК",
+  );
   document.title = `${fixed(reading.input_v, 0)} В · ${load == null ? "—" : Math.round(load)}% · UPS`;
   if (onBattery && !wasOnBattery && snapshot.settings && snapshot.settings.sound) beep();
   wasOnBattery = onBattery;
   const voltRank = { idle: 0, ok: 0, low: 1, high: 1, crit_low: 2, crit_high: 2 }[volt] || 0;
   if (voltRank > lastVoltRank && snapshot.settings && snapshot.settings.sound) beep();
   lastVoltRank = voltRank;
-  const sparkPoints = points.filter((point) => point.t >= Date.now() / 1000 - 15 * 60);
-  const last = sparkPoints[sparkPoints.length - 1];
-  const first = sparkPoints[0];
-  if (sparkHoverX == null) {
-    $("sparkNote").textContent = last && first
-      ? `вход ${fixed(last.in, 1)} · выход ${fixed(last.out, 1)} В`
-      : "";
-  }
+  if (sparkHoverX == null) refreshSparkNote();
 }
 
 function chip(node, active, text, tone) {
@@ -580,13 +1106,13 @@ function pushPoint(reading) {
   };
   if (!points.length || points[points.length - 1].t !== point.t) {
     points.push(point);
-    const cutoff = Date.now() / 1000 - minutes * 60;
+    const keep = Math.max(minutes, historyMinutes, Math.ceil(sparkView.window / 60)) * 60;
+    const cutoff = Date.now() / 1000 - keep;
     if (points.length > 20 && points[0].t < cutoff) {
       points = points.filter((item) => item.t >= cutoff);
     }
   }
   if ($("view-chart").classList.contains("on")) drawChart();
-  drawSpark();
 }
 
 function renderDevice(snapshot) {
@@ -609,12 +1135,259 @@ function renderDevice(snapshot) {
     : `<li class="empty">Последовательных портов нет. Для Mega(USB) они не нужны.</li>`;
 }
 
+function sparkLines() {
+  return SPARK_LINES.filter((line) => sparkOn[line.key]);
+}
+
+function sparkNow() {
+  return Date.now() / 1000;
+}
+
+function sparkSpan() {
+  const now = sparkNow();
+  const end = sparkView.follow ? now : Math.min(now, sparkView.end || now);
+  const start = end - sparkView.window;
+  return { start, end, now };
+}
+
+function formatSparkSpan(sec) {
+  if (sec < 90) return `${Math.round(sec)} с`;
+  if (sec < 3600) return `${Math.round(sec / 60)} мин`;
+  if (sec < 86400) {
+    const hours = sec / 3600;
+    return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} ч`;
+  }
+  return `${(sec / 86400).toFixed(1)} сут`;
+}
+
+function refreshSparkUi() {
+  const box = $("sparkLines");
+  if (box && !box.dataset.ready) {
+    box.innerHTML = SPARK_LINES.map((line) => `
+      <button type="button" data-key="${escapeAttr(line.key)}">
+        <i style="background:${line.color}"></i>${escapeHtml(line.name)}
+      </button>`).join("");
+    box.dataset.ready = "1";
+  }
+  if (box) {
+    box.querySelectorAll("button").forEach((button) => {
+      button.classList.toggle("on", Boolean(sparkOn[button.dataset.key]));
+    });
+  }
+  if ($("sparkRange")) $("sparkRange").textContent = formatSparkSpan(sparkView.window);
+  if ($("sparkReset")) $("sparkReset").hidden = sparkView.follow;
+  if ($("sparkTitle")) $("sparkTitle").textContent = sparkView.follow ? "Живой график" : "Обзор · пауза";
+  refreshSparkNote();
+  drawSpark();
+  ensureSparkHistory();
+}
+
+function refreshSparkNote() {
+  const node = $("sparkNote");
+  if (!node) return;
+  const plot = $("spark") && $("spark")._plot;
+  if (sparkHoverX != null && plot) {
+    const point = nearestPoint(plot, sparkHoverX);
+    if (point) {
+      node.textContent = `${clockTime(point.t)} · ${sparkLines().map((line) => `${line.name} ${fixed(point[line.key], 1)} ${line.unit}`).join(" · ")}`;
+      return;
+    }
+  }
+  const reading = state && state.reading;
+  if (!reading) {
+    node.textContent = "";
+    return;
+  }
+  const live = {
+    in: reading.input_v,
+    out: reading.output_v,
+    load: reading.load_pct,
+    batt: reading.battery_v,
+    soc: reading.battery_pct,
+    hz: reading.frequency,
+    temp: reading.temperature,
+  };
+  node.textContent = sparkLines().map((line) => `${line.name} ${fixed(live[line.key], 1)} ${line.unit}`).join(" · ");
+}
+
+function resetSpark() {
+  sparkView.follow = true;
+  sparkView.end = 0;
+  refreshSparkUi();
+}
+
+function zoomSpark(factor, anchor) {
+  const span = sparkSpan();
+  const next = Math.max(30, Math.min(24 * 3600, sparkView.window * factor));
+  if (next === sparkView.window) return;
+  const pivot = anchor != null ? anchor : (sparkView.follow ? span.end : (span.start + span.end) / 2);
+  sparkView.window = next;
+  if (!sparkView.follow) {
+    const frac = (pivot - span.start) / Math.max(1, span.end - span.start);
+    sparkView.end = pivot + (1 - frac) * next;
+  }
+  refreshSparkUi();
+  persistChartPrefs();
+}
+
+function panSpark(part) {
+  const span = sparkSpan();
+  const now = span.now;
+  sparkView.end = Math.min(now, span.end + sparkView.window * part);
+  sparkView.follow = sparkView.end >= now - 1.2;
+  if (sparkView.follow) sparkView.end = 0;
+  refreshSparkUi();
+}
+
+function onSparkWheel(event) {
+  event.preventDefault();
+  const canvas = $("spark");
+  const plot = canvas && canvas._plot;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  let anchor = sparkSpan().end;
+  if (plot) {
+    const frac = Math.min(1, Math.max(0, (x - plot.left) / Math.max(1, plot.plotW)));
+    anchor = plot.t0 + frac * (plot.t1 - plot.t0);
+    if (frac < 0.86) {
+      sparkView.follow = false;
+      sparkView.end = sparkSpan().end;
+    }
+  }
+  zoomSpark(event.deltaY > 0 ? 1.18 : 1 / 1.18, anchor);
+}
+
+function onSparkDown(event) {
+  const canvas = $("spark");
+  const plot = canvas && canvas._plot;
+  if (!plot) return;
+  canvas.setPointerCapture(event.pointerId);
+  const card = canvas.closest(".spark-card");
+  if (card) card.classList.add("grabbing");
+  sparkDrag = {
+    x: event.clientX,
+    end: sparkSpan().end,
+    follow: sparkView.follow,
+    plotW: plot.plotW,
+  };
+}
+
+function onSparkMove(event) {
+  if (!sparkDrag) {
+    if (event.target === $("spark")) hoverSpark(event);
+    return;
+  }
+  const dt = ((sparkDrag.x - event.clientX) / Math.max(1, sparkDrag.plotW)) * sparkView.window;
+  const now = sparkNow();
+  sparkView.follow = false;
+  sparkView.end = Math.min(now, sparkDrag.end + dt);
+  if (sparkView.end >= now - 0.8) {
+    sparkView.follow = true;
+    sparkView.end = 0;
+  }
+  if ($("sparkReset")) $("sparkReset").hidden = sparkView.follow;
+  if ($("sparkTitle")) $("sparkTitle").textContent = sparkView.follow ? "Живой график" : "Обзор · пауза";
+  refreshSparkNote();
+  drawSpark();
+}
+
+function onSparkUp() {
+  if (!sparkDrag) return;
+  sparkDrag = null;
+  const card = $("spark") && $("spark").closest(".spark-card");
+  if (card) card.classList.remove("grabbing");
+  refreshSparkUi();
+}
+
+function ensureSparkHistory() {
+  const need = Math.ceil(sparkView.window / 60) + 15;
+  if (need > historyMinutes) loadHistory(need);
+}
+
+function easeToward(cur, next, k) {
+  if (next == null) return cur;
+  if (cur == null) return next;
+  return cur + (next - cur) * k;
+}
+
+function sparkValues(source) {
+  const bag = {};
+  SPARK_LINES.forEach((line) => {
+    bag[line.key] = source ? source[line.key] : null;
+  });
+  return bag;
+}
+
+function easeSparkBag(bag, target, k) {
+  SPARK_LINES.forEach((line) => {
+    bag[line.key] = easeToward(bag[line.key], target[line.key], k);
+  });
+  return bag;
+}
+
+function tickSpark(ts) {
+  sparkRaf = requestAnimationFrame(tickSpark);
+  if (!$("view-overview") || !$("view-overview").classList.contains("on")) return;
+  if ($("dashboard") && $("dashboard").hidden) return;
+  const prev = sparkEase.at || ts;
+  const dt = Math.min(0.08, Math.max(0.008, (ts - prev) / 1000));
+  sparkEase.at = ts;
+  const k = 1 - Math.exp(-dt / 0.42);
+  const reading = state && state.reading;
+  const liveTarget = reading ? {
+    in: reading.input_v,
+    out: reading.output_v,
+    load: reading.load_pct,
+    batt: reading.battery_v,
+    soc: reading.battery_pct,
+    hz: reading.frequency,
+    temp: reading.temperature,
+  } : {};
+  easeSparkBag(sparkEase.live, liveTarget, k);
+  const last = points[points.length - 1];
+  if (last) {
+    if (sparkEase.lastT !== last.t) {
+      if (!sparkEase.shown || sparkEase.lastT === 0) {
+        sparkEase.shown = { ...sparkEase.live };
+      }
+      sparkEase.lastT = last.t;
+    }
+    easeSparkBag(sparkEase.shown, sparkValues(last), k);
+  }
+  drawSpark();
+}
+
 function drawSpark() {
-  const recent = points.filter((point) => point.t >= Date.now() / 1000 - 15 * 60);
-  drawLines($("spark"), recent, [
-    { key: "in", color: "#e0b06a", name: "вход" },
-    { key: "out", color: "#8fd0ff", name: "выход" },
-  ], { pad: 10, axis: false, unit: "В" });
+  const canvas = $("spark");
+  if (!canvas) return;
+  const lines = sparkLines();
+  const span = sparkSpan();
+  const visible = points.filter((point) => point.t >= span.start - 2 && point.t <= span.end + 2);
+  const data = visible.map((point, index) => {
+    const copy = { ...point };
+    if (sparkView.follow && index === visible.length - 1 && sparkEase.shown) {
+      SPARK_LINES.forEach((line) => {
+        if (sparkEase.shown[line.key] != null) copy[line.key] = sparkEase.shown[line.key];
+      });
+    }
+    return copy;
+  });
+  if (sparkView.follow && data.length && state && state.reading) {
+    const head = { t: span.end, ...sparkEase.live };
+    const last = data[data.length - 1];
+    if (head.t > last.t + 0.04) data.push(head);
+    else Object.assign(last, head, { t: last.t });
+  }
+  drawLines(canvas, data, lines, {
+    pad: 10,
+    axis: false,
+    unit: lines.length === 1 ? lines[0].unit : "",
+    t0: span.start,
+    t1: span.end,
+    smooth: true,
+    perUnit: true,
+    ticks: true,
+  });
 }
 
 function drawChart(refreshLegend = true) {
@@ -630,7 +1403,7 @@ function drawChart(refreshLegend = true) {
     pad: 18,
     axis: true,
     unit: spec.unit,
-    digits: series === "load" ? 0 : 1,
+    digits: series === "load" || series === "charge" ? 0 : 1,
   });
 }
 
@@ -651,6 +1424,107 @@ function syncPackCells(series, groups) {
       </div>`).join("");
     return `<div class="string">${cells}</div>`;
   }).join("");
+}
+
+function lineScale(data, lines) {
+  const groups = {};
+  lines.forEach((line) => {
+    const unit = line.unit || "";
+    if (!groups[unit]) groups[unit] = { min: Infinity, max: -Infinity };
+  });
+  data.forEach((point) => {
+    lines.forEach((line) => {
+      const value = point[line.key];
+      if (value == null) return;
+      const group = groups[line.unit || ""];
+      group.min = Math.min(group.min, value);
+      group.max = Math.max(group.max, value);
+    });
+  });
+  Object.keys(groups).forEach((unit) => {
+    const group = groups[unit];
+    if (!Number.isFinite(group.min)) {
+      group.min = 0;
+      group.max = 1;
+    }
+    if (group.min === group.max) {
+      group.min -= 1;
+      group.max += 1;
+    }
+    const span = group.max - group.min;
+    const targetMin = group.min - span * 0.12;
+    const targetMax = group.max + span * 0.12;
+    const eased = sparkEase.units[unit] || { min: targetMin, max: targetMax };
+    eased.min = easeToward(eased.min, targetMin, 0.12);
+    eased.max = easeToward(eased.max, targetMax, 0.12);
+    sparkEase.units[unit] = eased;
+    group.min = eased.min;
+    group.max = eased.max;
+  });
+  return groups;
+}
+
+function strokeSmooth(ctx, pts) {
+  if (pts.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  if (pts.length === 2) {
+    ctx.lineTo(pts[1].x, pts[1].y);
+    ctx.stroke();
+    return;
+  }
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const [c1, c2] = splineControls(p0, p1, p2, p3);
+    ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, p2.x, p2.y);
+  }
+  ctx.stroke();
+}
+
+function splineControls(p0, p1, p2, p3) {
+  const d1 = Math.max(1e-3, Math.hypot(p1.x - p0.x, p1.y - p0.y));
+  const d2 = Math.max(1e-3, Math.hypot(p2.x - p1.x, p2.y - p1.y));
+  const d3 = Math.max(1e-3, Math.hypot(p3.x - p2.x, p3.y - p2.y));
+  const s1 = (2 * d1) / (d1 + d2);
+  const s2 = (2 * d3) / (d2 + d3);
+  return [
+    {
+      x: p1.x + (p2.x - p0.x) * s1 / 9,
+      y: p1.y + (p2.y - p0.y) * s1 / 9,
+    },
+    {
+      x: p2.x - (p3.x - p1.x) * s2 / 9,
+      y: p2.y - (p3.y - p1.y) * s2 / 9,
+    },
+  ];
+}
+
+function layoutSchemeTraces() {
+  const hud = document.querySelector(".scheme-hud");
+  if (!hud) return;
+  const drop = hud.querySelector('[data-slot="drop"]');
+  const rise = hud.querySelector('[data-slot="rise"]');
+  const inn = hud.querySelector('[data-slot="in"]');
+  const xfmr = hud.querySelector('[data-slot="xfmr"]');
+  const out = hud.querySelector('[data-slot="out"]');
+  const inv = hud.querySelector('[data-slot="inv"]');
+  if (!drop || !rise || !inn || !xfmr || !out || !inv) return;
+  const box = hud.getBoundingClientRect();
+  const stand = (trace, topEl, botEl) => {
+    const top = topEl.getBoundingClientRect();
+    const bot = botEl.getBoundingClientRect();
+    const x = top.left + top.width / 2 - box.left;
+    const y0 = top.bottom - box.top - 2;
+    const y1 = bot.top - box.top + 2;
+    trace.style.left = `${Math.round(x - 7)}px`;
+    trace.style.top = `${Math.round(y0)}px`;
+    trace.style.height = `${Math.max(12, Math.round(y1 - y0))}px`;
+  };
+  stand(drop, inn, xfmr);
+  stand(rise, out, inv);
 }
 
 function drawLines(canvas, data, lines, options) {
@@ -683,6 +1557,7 @@ function drawLines(canvas, data, lines, options) {
     canvas._plot = null;
     return;
   }
+  const scales = options.perUnit ? lineScale(data, lines) : null;
   let min = Math.min(...values);
   let max = Math.max(...values);
   if (min === max) {
@@ -693,18 +1568,25 @@ function drawLines(canvas, data, lines, options) {
   min -= span * 0.12;
   max += span * 0.12;
   const left = options.axis ? 58 : pad;
-  const bottom = options.axis ? 28 : 10;
+  const bottom = options.axis || options.ticks ? 22 : 10;
   const plotW = width - left - 16;
   const plotH = height - pad - bottom;
-  const t0 = data[0].t;
-  const t1 = data[data.length - 1].t;
+  const t0 = options.t0 != null ? options.t0 : data[0].t;
+  const t1 = options.t1 != null ? options.t1 : data[data.length - 1].t;
   const tSpan = Math.max(1, t1 - t0);
   const xOf = (t) => left + ((t - t0) / tSpan) * plotW;
-  const yOf = (value) => pad + ((max - value) / (max - min)) * plotH;
+  const yOfValue = (value, unit) => {
+    if (scales) {
+      const group = scales[unit || ""] || { min, max };
+      return pad + ((group.max - value) / (group.max - group.min)) * plotH;
+    }
+    return pad + ((max - value) / (max - min)) * plotH;
+  };
+  const yOf = (value) => yOfValue(value, lines[0] && lines[0].unit);
   ctx.strokeStyle = "rgba(232,220,196,0.10)";
   ctx.lineWidth = 1;
   ctx.fillStyle = "#93a79a";
-  ctx.font = "12px Cascadia Mono, Consolas, monospace";
+  ctx.font = "11px Cascadia Mono, Consolas, monospace";
   for (let i = 0; i <= 4; i += 1) {
     const y = pad + (plotH * i) / 4;
     ctx.beginPath();
@@ -716,46 +1598,73 @@ function drawLines(canvas, data, lines, options) {
       ctx.fillText(value.toFixed(digits), 6, y + 4);
     }
   }
-  if (options.axis) {
-    for (let i = 0; i <= 4; i += 1) {
-      const t = t0 + (tSpan * i) / 4;
+  if (options.axis || options.ticks) {
+    const marks = options.ticks ? 3 : 4;
+    for (let i = 0; i <= marks; i += 1) {
+      const t = t0 + (tSpan * i) / marks;
       const x = xOf(t);
-      ctx.fillText(clockTime(t).slice(0, 5), Math.max(left, x - 16), height - 8);
+      ctx.fillText(clockTime(t).slice(0, 5), Math.max(left, x - 16), height - 6);
     }
   }
   lines.forEach((line) => {
     const samples = data.filter((point) => point[line.key] != null);
     if (samples.length < 2) return;
-    const first = samples[0];
-    const last = samples[samples.length - 1];
+    const pts = samples.map((point) => ({
+      x: xOf(point.t),
+      y: yOfValue(point[line.key], line.unit),
+    }));
+    const first = pts[0];
+    const last = pts[pts.length - 1];
     const fill = ctx.createLinearGradient(0, pad, 0, pad + plotH);
-    fill.addColorStop(0, hexAlpha(line.color, 0.28));
+    fill.addColorStop(0, hexAlpha(line.color, 0.22));
     fill.addColorStop(1, hexAlpha(line.color, 0.01));
     ctx.beginPath();
-    ctx.moveTo(xOf(first.t), yOf(first[line.key]));
-    samples.forEach((point) => ctx.lineTo(xOf(point.t), yOf(point[line.key])));
-    ctx.lineTo(xOf(last.t), pad + plotH);
-    ctx.lineTo(xOf(first.t), pad + plotH);
+    ctx.moveTo(first.x, first.y);
+    if (options.smooth) {
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const p0 = pts[Math.max(0, i - 1)];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = pts[Math.min(pts.length - 1, i + 2)];
+        ctx.bezierCurveTo(
+          p1.x + (p2.x - p0.x) / 6,
+          p1.y + (p2.y - p0.y) / 6,
+          p2.x - (p3.x - p1.x) / 6,
+          p2.y - (p3.y - p1.y) / 6,
+          p2.x,
+          p2.y,
+        );
+      }
+    } else {
+      pts.slice(1).forEach((pt) => ctx.lineTo(pt.x, pt.y));
+    }
+    ctx.lineTo(last.x, pad + plotH);
+    ctx.lineTo(first.x, pad + plotH);
     ctx.closePath();
     ctx.fillStyle = fill;
     ctx.fill();
-    ctx.beginPath();
     ctx.lineWidth = 2.4;
     ctx.strokeStyle = line.color;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.shadowColor = hexAlpha(line.color, 0.35);
     ctx.shadowBlur = 8;
-    samples.forEach((point, index) => {
-      const x = xOf(point.t);
-      const y = yOf(point[line.key]);
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
+    if (options.smooth) strokeSmooth(ctx, pts);
+    else {
+      ctx.beginPath();
+      pts.forEach((pt, index) => {
+        if (index === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.stroke();
+    }
     ctx.shadowBlur = 0;
   });
-  const plot = { data, lines, min, max, left, pad, plotW, plotH, unit: options.unit || "", xOf, yOf };
+  const plot = {
+    data, lines, min, max, left, pad, plotW, plotH,
+    t0, t1, unit: options.unit || "", xOf,
+    yOf: (value, unit) => yOfValue(value, unit),
+  };
   canvas._plot = plot;
   const hover = canvas.id === "chart" ? chartHoverX : sparkHoverX;
   if (hover != null) paintCrosshair(ctx, plot, hover);
@@ -790,7 +1699,7 @@ function paintCrosshair(ctx, plot, x) {
   plot.lines.forEach((line) => {
     const value = point[line.key];
     if (value == null) return;
-    const y = plot.yOf(value);
+    const y = plot.yOf(value, line.unit);
     ctx.fillStyle = line.color;
     ctx.beginPath();
     ctx.arc(px, y, 4.5, 0, Math.PI * 2);
@@ -816,14 +1725,13 @@ function hoverChart(event) {
 }
 
 function hoverSpark(event) {
+  if (sparkDrag) return;
   const canvas = $("spark");
   const plot = canvas._plot;
   if (!plot) return;
   const rect = canvas.getBoundingClientRect();
   sparkHoverX = event.clientX - rect.left;
-  const point = nearestPoint(plot, sparkHoverX);
-  if (!point) return;
-  $("sparkNote").textContent = `${clockTime(point.t)} · вход ${fixed(point.in, 1)} · выход ${fixed(point.out, 1)} В`;
+  refreshSparkNote();
   drawSpark();
 }
 
@@ -838,7 +1746,7 @@ function hexAlpha(hex, alpha) {
 function pillText(snapshot) {
   const reading = snapshot.reading;
   const age = reading ? Date.now() / 1000 - reading.updated_at : 1e9;
-  if (snapshot.mode === "live" || (reading && reading.source === "live" && age < 180)) {
+  if (snapshot.mode === "live") {
     return age < 5 ? "ИБП на связи" : "Жду ответ ИБП";
   }
   if (snapshot.mode === "demo") return "Демонстрация";
@@ -860,7 +1768,7 @@ function gateText(snapshot) {
   if (snapshot.mode === "missing") {
     return snapshot.message || "Проверьте USB-кабель. Отдельная программа и отдельный драйвер не нужны.";
   }
-  return "Ищу ИБП по USB. Программа UPSmart для этого не нужна.";
+  return snapshot.message || "Ищу ИБП по USB. Программа UPSmart для этого не нужна.";
 }
 
 function portText(snapshot) {
@@ -959,8 +1867,15 @@ function prepareForScreenshot() {
   const name = current ? current.dataset.tab : "overview";
   const settings = $("settings");
   const quit = $("quitDialog");
+  const lab = $("labDialog");
+  const scan = $("scanDialog");
   if (settings && settings.open) settings.close();
   if (quit && quit.open) quit.close();
+  if (lab && lab.open) lab.close();
+  if (scan && scan.open) scan.close();
+  closeAlert();
+  if ($("noticeInbox")) $("noticeInbox").hidden = true;
+  if ($("noticeBtn")) $("noticeBtn").classList.remove("on");
   document.documentElement.classList.add("shot");
   showTab("overview");
   return name;
@@ -980,6 +1895,238 @@ function sendQuit(action) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
   }).catch(() => {});
+}
+
+function alarmKey(reading) {
+  if (!reading) return "";
+  if (reading.battery_loose) return "battery_loose";
+  if (reading.fault) return "fault";
+  if (reading.on_battery) return "on_battery";
+  const volt = reading.voltage_state;
+  if (volt && volt !== "ok" && volt !== "idle") return `voltage_${volt}`;
+  if (reading.battery_swap && reading.battery_swap.from != null) return "battery_swap";
+  return "";
+}
+
+function alarmPayload(reading) {
+  const key = alarmKey(reading);
+  if (key === "battery_loose") {
+    return { code: "battery_loose", level: "bad", message: "Напряжение батареи скачет — батареи, похоже, отключены от ИБП." };
+  }
+  if (key === "fault") {
+    return { code: "fault", level: "bad", message: "ИБП сообщил об аварии." };
+  }
+  if (key === "on_battery") {
+    return {
+      code: "on_battery",
+      level: "warn",
+      message: `Питание от батареи · разряд ${clock(reading.discharge_seconds || 0)} · осталось ${runtime(reading.runtime_min)}`,
+    };
+  }
+  if (key.startsWith("voltage_")) {
+    return {
+      code: key,
+      level: key.includes("crit") ? "bad" : "warn",
+      message: `${reading.voltage_note || "Напряжение сети вне нормы"} · сейчас ${fixed(reading.input_v, 1)} В`,
+    };
+  }
+  if (key === "battery_swap") {
+    const swap = reading.battery_swap || {};
+    return {
+      code: "battery_swap",
+      level: "warn",
+      message: `Пакет сменился: ${Number(swap.from).toFixed(1)} → ${Number(swap.to).toFixed(1)} В.`,
+    };
+  }
+  return null;
+}
+
+function syncAlerts(reading, snapshot) {
+  const events = (snapshot && snapshot.events) || [];
+  const newest = events[0];
+  if (!alertReady) {
+    lastEventT = newest ? Number(newest.t) || 0 : 0;
+    lastAlarmKey = alarmKey(reading);
+    alertReady = true;
+    notices = events.map((item) => ({
+      code: item.code || "",
+      level: item.level || "",
+      message: item.message || "",
+      t: item.t || 0,
+      title: ALERT_TITLES[item.code] || "Событие UPS",
+    }));
+    noticeUnread = 0;
+    renderInbox();
+    const current = alarmPayload(reading);
+    if (current) openAlert(current, { keep: true });
+    return;
+  }
+  if (newest && Number(newest.t) > lastEventT) {
+    lastEventT = Number(newest.t);
+    openAlert(newest);
+  }
+  const key = alarmKey(reading);
+  if (key && key !== lastAlarmKey) {
+    const current = alarmPayload(reading);
+    if (current) openAlert(current);
+  }
+  lastAlarmKey = key;
+}
+
+function noticeTone(item) {
+  const code = item.code || "";
+  const level = item.level || "";
+  if (level === "bad" || code.includes("crit") || code === "fault" || code === "pc_off") return "bad";
+  if (level === "ok" || code.endsWith("_clear")) return "ok";
+  return "warn";
+}
+
+function pushNotice(item) {
+  const code = item.code || "";
+  notices.unshift({
+    code,
+    level: item.level || "",
+    message: item.message || "",
+    t: item.t || Date.now() / 1000,
+    title: ALERT_TITLES[code] || item.title || "Событие UPS",
+  });
+  notices = notices.slice(0, 40);
+  noticeUnread += 1;
+  renderInbox();
+}
+
+function renderInbox() {
+  const badge = $("noticeBadge");
+  if (badge) {
+    badge.hidden = noticeUnread < 1;
+    badge.textContent = noticeUnread > 9 ? "9+" : String(noticeUnread);
+  }
+  const list = $("noticeList");
+  if (!list) return;
+  list.innerHTML = notices.length
+    ? notices.map((item, index) => `
+        <li class="${noticeTone(item)}" data-index="${index}">
+          <time>${clockTime(item.t)}</time>
+          <strong>${escapeHtml(item.title)}</strong>
+        </li>`).join("")
+    : `<li class="empty">Пока пусто.</li>`;
+}
+
+function toggleInbox() {
+  const box = $("noticeInbox");
+  const btn = $("noticeBtn");
+  if (!box) return;
+  const open = box.hidden;
+  box.hidden = !open;
+  if (btn) btn.classList.toggle("on", open);
+  if (open) {
+    noticeUnread = 0;
+    renderInbox();
+  }
+}
+
+function clearInbox() {
+  notices = [];
+  noticeUnread = 0;
+  renderInbox();
+}
+
+function openAlert(item, options) {
+  const modal = $("alertModal");
+  const card = $("alertCard");
+  if (!modal || !card || document.documentElement.classList.contains("shot")) return;
+  const code = item.code || "";
+  lastAlertCode = code;
+  const tone = noticeTone(item);
+  if (!options || !options.keep) pushNotice(item);
+  card.className = `alert-card ${tone}`;
+  $("alertKicker").textContent = tone === "bad" ? "Авария" : tone === "ok" ? "Снято" : "Предупреждение";
+  $("alertTitle").textContent = ALERT_TITLES[code] || item.title || "Событие UPS";
+  $("alertText").textContent = item.message || "";
+  $("alertTime").textContent = item.t ? clockTime(item.t) : clockTime(Date.now() / 1000);
+  $("alertArt").innerHTML = alertGlyph(code);
+  if ($("alertCount")) {
+    const ticking = code === "pc_shutdown" || code === "pc_off" || code === "pc_reboot";
+    $("alertCount").hidden = !ticking;
+    $("alertCount").textContent = ticking ? clock(simLeft()) : "";
+  }
+  modal.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(closeAlert, 7000);
+}
+
+function closeAlert() {
+  if ($("alertModal")) $("alertModal").hidden = true;
+}
+
+function alertGlyph(code) {
+  const stroke = "currentColor";
+  if (code === "on_battery" || code === "battery_low") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5" stroke-linejoin="round">
+      <rect x="22" y="38" width="62" height="44" rx="4"/>
+      <rect x="84" y="52" width="10" height="16"/>
+      <path d="M34 60h10M50 60h10M66 60h8"/>
+      <path d="M28 22 18 8M96 22l10-14"/>
+    </g>`;
+  }
+  if (code === "on_battery_clear" || code.endsWith("_clear")) {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <circle cx="60" cy="60" r="36"/>
+      <path d="M40 62l14 14 28-32"/>
+    </g>`;
+  }
+  if (code && code.startsWith("voltage_")) {
+    const up = code.includes("high");
+    const crit = code.includes("crit");
+    return `<g fill="none" stroke="${stroke}" stroke-width="5" stroke-linejoin="round">
+      <rect x="28" y="28" width="48" height="28" rx="4"/>
+      <path d="M76 36h12v12H76"/>
+      <path d="M42 20v8M58 20v8"/>
+      <path d="${up ? "M60 68l-22 28h44z" : "M60 104l-22-28h44z"}" fill="${stroke}" stroke="none"/>
+      ${crit ? `<path d="M24 100 96 20"/>` : ""}
+    </g>`;
+  }
+  if (code === "battery_loose") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <rect x="18" y="36" width="36" height="28" rx="3"/>
+      <rect x="66" y="56" width="36" height="28" rx="3"/>
+      <path d="M54 50 66 70"/>
+    </g>`;
+  }
+  if (code === "battery_swap") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <rect x="16" y="28" width="36" height="26" rx="3"/>
+      <rect x="68" y="66" width="36" height="26" rx="3"/>
+      <path d="M48 86c18 0 24-16 24-16"/>
+      <path d="M66 62l6 10-12 2"/>
+    </g>`;
+  }
+  if (code === "pc_shutdown" || code === "pc_off" || code === "pc_reboot") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <circle cx="60" cy="60" r="36"/>
+      <path d="M60 32v28l18 10"/>
+    </g>`;
+  }
+  if (code === "fault") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <path d="M60 18 104 98H16Z"/>
+      <path d="M60 46v24"/>
+      <circle cx="60" cy="84" r="3" fill="${stroke}"/>
+    </g>`;
+  }
+  if (code === "link_lost") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <path d="M60 86V40"/>
+      <circle cx="60" cy="94" r="6"/>
+      <path d="M40 36c12-16 28-16 40 0"/>
+      <path d="M30 24c18-22 42-22 60 0"/>
+      <path d="M28 100 92 20"/>
+    </g>`;
+  }
+  return `<g fill="none" stroke="${stroke}" stroke-width="5">
+    <circle cx="60" cy="60" r="36"/>
+    <path d="M28 62h16l10-28 16 48 10-20h12"/>
+  </g>`;
 }
 
 function toast(text) {

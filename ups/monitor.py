@@ -23,6 +23,8 @@ from ups.protocol import (
     mains_present,
     mains_voltage_active,
     mode_label,
+    voltage_limits,
+    voltage_note,
     parse_info,
     parse_q1,
     parse_ratings,
@@ -35,11 +37,14 @@ from ups.transport import (
     DemoSource,
     DeviceBusy,
     TransportError,
+    hid_still_there,
     list_serial_ports,
     open_mega,
+    open_serial,
     probe_serial,
     scan_hid,
     upsmart_running,
+    _likely_serial,
 )
 from ups import reports
 from ups.telegram import TOKEN_RE, TelegramBridge, format_events, format_report, parse_clock, status_lines
@@ -65,10 +70,24 @@ DEFAULTS = {
     "telegram_chats": [],
     "telegram_notify_power": True,
     "telegram_notify_alerts": True,
+    "telegram_events": {},
     "telegram_digest": False,
     "telegram_digest_time": "21:00",
+    "spark_lines": ["in", "out"],
+    "spark_window": 900,
+    "chart_minutes": 60,
+    "chart_series": "voltage",
     "journal_enabled": True,
     "journal_dir": "",
+    "volt_low": 200,
+    "volt_high": 240,
+    "volt_crit_low": 180,
+    "volt_crit_high": 250,
+    "window_x": None,
+    "window_y": None,
+    "window_width": 1320,
+    "window_height": 860,
+    "window_maximized": False,
 }
 
 _LIMITS = {
@@ -81,7 +100,67 @@ _LIMITS = {
     "eod_voltage": (9, 13),
     "battery_health": (10, 100),
     "shutdown_delay": (30, 3600),
+    "volt_low": (80, 300),
+    "volt_high": (80, 300),
+    "volt_crit_low": (80, 300),
+    "volt_crit_high": (80, 300),
+    "spark_window": (30, 86400),
 }
+
+SIMULATIONS = (
+    {"code": "on_battery", "level": "warn", "group": "Сеть", "title": "Сеть пропала",
+     "message": "Симуляция · сеть пропала. ИБП и компьютер не затронуты."},
+    {"code": "on_battery_clear", "level": "ok", "group": "Сеть", "title": "Сеть вернулась",
+     "message": "Симуляция · сеть вернулась."},
+    {"code": "voltage_low", "level": "warn", "group": "Сеть", "title": "Сеть понижена",
+     "message": "Симуляция · вход ниже порога предупреждения."},
+    {"code": "voltage_low_clear", "level": "ok", "group": "Сеть", "title": "Понижение снято",
+     "message": "Симуляция · напряжение сети снова в норме."},
+    {"code": "voltage_high", "level": "warn", "group": "Сеть", "title": "Сеть повышена",
+     "message": "Симуляция · вход выше порога предупреждения."},
+    {"code": "voltage_high_clear", "level": "ok", "group": "Сеть", "title": "Повышение снято",
+     "message": "Симуляция · напряжение сети снова в норме."},
+    {"code": "voltage_crit_low", "level": "bad", "group": "Сеть", "title": "Сеть слишком низкая",
+     "message": "Симуляция · вход ниже критического порога."},
+    {"code": "voltage_crit_low_clear", "level": "ok", "group": "Сеть", "title": "Спад снят",
+     "message": "Симуляция · критически низкое напряжение снято."},
+    {"code": "voltage_crit_high", "level": "bad", "group": "Сеть", "title": "Сеть слишком высокая",
+     "message": "Симуляция · вход выше критического порога."},
+    {"code": "voltage_crit_high_clear", "level": "ok", "group": "Сеть", "title": "Скачок снят",
+     "message": "Симуляция · критически высокое напряжение снято."},
+    {"code": "battery_low", "level": "warn", "group": "Батарея", "title": "Батарея садится",
+     "message": "Симуляция · низкий заряд батареи."},
+    {"code": "battery_low_clear", "level": "ok", "group": "Батарея", "title": "Батарея в норме",
+     "message": "Симуляция · заряд батареи восстановился."},
+    {"code": "battery_loose", "level": "bad", "group": "Батарея", "title": "Батареи отключены",
+     "message": "Симуляция · напряжение пакета скачет, как при обрыве."},
+    {"code": "battery_loose_clear", "level": "ok", "group": "Батарея", "title": "Пакет в норме",
+     "message": "Симуляция · пакет батарей снова на месте."},
+    {"code": "battery_swap", "level": "warn", "group": "Батарея", "title": "Пакет сменился",
+     "message": "Симуляция · пакет батарей сменился на другой."},
+    {"code": "fault", "level": "bad", "group": "ИБП", "title": "Неисправность",
+     "message": "Симуляция · ИБП сообщил об аварии."},
+    {"code": "fault_clear", "level": "ok", "group": "ИБП", "title": "Авария снята",
+     "message": "Симуляция · авария ИБП снята."},
+    {"code": "link_lost", "level": "warn", "group": "ИБП", "title": "Нет связи с ИБП",
+     "message": "Симуляция · связь с ИБП потеряна."},
+    {"code": "pc_shutdown", "level": "warn", "group": "ПК", "title": "Отсчёт выключения",
+     "message": "Симуляция · запущен отсчёт выключения ПК. Питание не трогаем."},
+    {"code": "pc_off", "level": "bad", "group": "ПК", "title": "Выключить ПК",
+     "message": "Симуляция · команда выключения ПК. Компьютер не выключится."},
+    {"code": "pc_reboot", "level": "warn", "group": "ПК", "title": "Перезагрузка",
+     "message": "Симуляция · команда перезагрузки. Компьютер не перезагрузится."},
+    {"code": "pc_sleep", "level": "warn", "group": "ПК", "title": "Сон",
+     "message": "Симуляция · команда сна. Компьютер не уснёт."},
+    {"code": "pc_hibernate", "level": "warn", "group": "ПК", "title": "Гибернация",
+     "message": "Симуляция · команда гибернации. Компьютер не уйдёт в гибернацию."},
+    {"code": "startup", "level": "ok", "group": "Программа", "title": "UPS запущен",
+     "message": "Симуляция · программа запущена."},
+    {"code": "shutdown", "level": "info", "group": "Программа", "title": "UPS закрыт",
+     "message": "Симуляция · программа закрыта. Процесс не завершается."},
+    {"code": "app_restart", "level": "warn", "group": "Программа", "title": "Перезапуск UPS",
+     "message": "Симуляция · перезапуск программы. start.bat не запускается."},
+)
 
 
 class Monitor:
@@ -109,10 +188,12 @@ class Monitor:
         self._shutdown_at: float | None = None
         self._shutdown_sent = False
         self._shutdown_held = False
+        self._shutdown_kind: str | None = None
         self._session_started = time.time()
         self._last_ok = 0.0
         self._live_since = 0.0
         self._read_fails = 0
+        self._hid_misses = 0
         self._last_raw = ""
         self._same_frames = 0
         self._frozen = False
@@ -345,6 +426,78 @@ class Monitor:
             return {"ok": False, "message": f"Папку не открыть: {exc}"}
         return {"ok": True, "message": f"Открываю {root}", "dir": str(root)}
 
+    def scan_ports(self) -> dict:
+        current_path = ""
+        current_com = ""
+        transport = self._transport
+        if transport is not None:
+            current_path = str(getattr(getattr(transport, "found", None), "path", "") or "")
+            current_com = str(getattr(transport, "port", "") or "")
+        hid = []
+        for device in scan_hid():
+            item = {
+                "kind": "hid",
+                "id": f"{device.vendor_id:04X}:{device.product_id:04X}",
+                "path": device.path,
+                "label": f"Mega USB {device.vendor_id:04X}:{device.product_id:04X}",
+                "status": "найден",
+            }
+            if current_path and device.path.lower() == current_path.lower():
+                item["status"] = "подключено сейчас"
+                hid.append(item)
+                continue
+            try:
+                probe = open_mega(device)
+                try:
+                    probe.query_q1()
+                    item["status"] = "отвечает"
+                except (TransportError, ProtocolError, OSError) as exc:
+                    item["status"] = f"открыт, нет ответа: {exc}"
+                finally:
+                    probe.close()
+            except DeviceBusy:
+                item["status"] = "занят другой программой"
+            except (TransportError, OSError) as exc:
+                item["status"] = str(exc)
+            hid.append(item)
+        com = []
+        ports = list_serial_ports()
+        for port in ports:
+            device = str(port.get("device") or "")
+            desc = str(port.get("description") or "")
+            hwid = str(port.get("hwid") or "")
+            likely = _likely_serial(desc, hwid)
+            item = {
+                "kind": "com",
+                "device": device,
+                "description": desc,
+                "likely": likely,
+                "status": "похоже на ИБП" if likely else "обычный порт",
+            }
+            if current_com and device.upper() == current_com.upper():
+                item["status"] = "подключено сейчас"
+                com.append(item)
+                continue
+            if likely:
+                try:
+                    probe = open_serial(device)
+                    probe.close()
+                    item["status"] = "отвечает как Megatec"
+                except (TransportError, OSError) as exc:
+                    item["status"] = f"не ответил: {exc}"
+            com.append(item)
+        with self._lock:
+            self._ports = ports
+            self._ports_at = time.time()
+        hid_n = len(hid)
+        com_n = len(com)
+        return {
+            "ok": True,
+            "hid": hid,
+            "com": com,
+            "message": f"HID {hid_n}, COM {com_n}",
+        }
+
     def state(self) -> dict:
         if self._mode == "blocked":
             self._blocker_cached()
@@ -353,6 +506,9 @@ class Monitor:
             self._ports_at = time.time()
         with self._lock:
             reading = None if self._reading is None else dict(self._reading)
+            if reading is not None:
+                reading["shutdown_seconds"] = self._visible_countdown()
+                reading["shutdown_kind"] = self._shutdown_kind
             link = None if self._transport is None else self._transport.label
             payload = {
                 "version": __version__,
@@ -370,6 +526,7 @@ class Monitor:
                 "session_seconds": int(time.time() - self._session_started),
                 "settings": _public_settings(self.settings),
                 "ports": list(self._ports),
+                "events": list(reversed(self._events[-8:])),
             }
         payload["telegram"] = self._telegram.status()
         return payload
@@ -407,6 +564,16 @@ class Monitor:
             for row in rows
         ]
         return {"points": _decimate([point for point in points if _sane_point(point)], 700)}
+
+    def simulations(self) -> dict:
+        return {"ok": True, "items": [dict(item) for item in SIMULATIONS]}
+
+    def simulate_event(self, code: str) -> dict:
+        spec = next((item for item in SIMULATIONS if item["code"] == code), None)
+        if spec is None:
+            return {"ok": False, "message": "Нет такой симуляции"}
+        self._event(spec["level"], spec["code"], spec["message"], force=True)
+        return {"ok": True, "message": f"Симуляция: {spec['title']}"}
 
     def events(self, limit: int = 200) -> dict:
         limit = max(1, min(int(limit), 500))
@@ -447,9 +614,9 @@ class Monitor:
                     # The bridge chip wants the UPSmart rhythm: one read per second.
                     wait = 1.0
                 if self._mode in {"blocked", "missing"}:
-                    wait = 3 if self._mode == "blocked" else 5
+                    wait = 2 if self._mode == "blocked" else 1.5
                 elif self._mode == "searching" and self._transport is None:
-                    wait = 5
+                    wait = 1.0
             self._wake.wait(wait)
             self._wake.clear()
 
@@ -490,16 +657,18 @@ class Monitor:
         if action == "cancel_shutdown":
             self._shutdown_held = True
             self._abort_os_shutdown()
+            self._clear_shutdown()
+            self._stamp_reading_countdown()
             self._event("info", "shutdown_cancel", "Выключение компьютера отменено")
             return {"ok": True, "message": "Выключение компьютера отменено"}
         if action == "pc_off":
             power.shutdown(20, f"{APP_NAME}: выключение с телефона")
-            self._shutdown_sent = True
+            self._arm_power("off", 20)
             self._event("bad", "pc_off", "Компьютер выключится через 20 секунд")
             return {"ok": True, "message": "Компьютер выключится через 20 секунд. Можно отменить."}
         if action == "pc_reboot":
             power.restart(20, f"{APP_NAME}: перезагрузка с телефона")
-            self._shutdown_sent = True
+            self._arm_power("reboot", 20)
             self._event("warn", "pc_reboot", "Компьютер перезагрузится через 20 секунд")
             return {"ok": True, "message": "Компьютер перезагрузится через 20 секунд. Можно отменить."}
         if action == "pc_sleep":
@@ -553,11 +722,37 @@ class Monitor:
             self._event("warn", "command_fail", text)
             return {"ok": False, "message": text}
 
+    def _hid_unplugged(self) -> bool:
+        transport = self._transport
+        if transport is None or getattr(transport, "kind", "") != "mega-usb":
+            self._hid_misses = 0
+            return False
+        path = getattr(getattr(transport, "found", None), "path", "")
+        if not path or hid_still_there(path):
+            self._hid_misses = 0
+            return False
+        self._hid_misses += 1
+        return self._hid_misses >= 2
+
+    def _lose_link(self, message: str) -> None:
+        had = self._transport is not None or self._reading is not None
+        self._close_transport()
+        self._read_fails = 0
+        self._hid_misses = 0
+        with self._lock:
+            self._reading = None
+            self._mode = "searching"
+            self._message = message
+        if had:
+            self._event("warn", "link_lost", "Связь с ИБП прервалась, ищу снова")
+
     def _poll_demo(self) -> None:
         raw = self._demo.query_q1()
         self._accept(raw, "demo")
 
     def _poll_live(self) -> None:
+        if self._transport is not None and self._hid_unplugged():
+            self._lose_link("USB отключили, ищу бесперебойник")
         if self._transport is None:
             self._connect()
             if self._transport is None:
@@ -567,19 +762,13 @@ class Monitor:
         except (TransportError, ProtocolError, OSError) as exc:
             self._read_fails += 1
             self._note("!", str(exc))
-            # A blank frame or a slow USB answer is normal. Keep the last
-            # real numbers on screen and try again on the same connection.
-            with self._lock:
-                if self._reading is not None:
-                    self._mode = "live"
-                    self._message = "Связь есть"
-                else:
-                    self._message = "ИБП подключён по USB, жду нормальный ответ"
-            if self._read_fails < 6:
+            path = getattr(getattr(self._transport, "found", None), "path", "")
+            yanked = getattr(self._transport, "kind", "") == "mega-usb" and path and not hid_still_there(path)
+            if yanked or self._read_fails >= 3:
+                self._lose_link("Связь с ИБП пропала, ищу снова")
                 return
-            self._read_fails = 0
-            self._close_transport()
-            self._event("warn", "link_lost", "Связь с ИБП прервалась, подключаюсь снова")
+            with self._lock:
+                self._message = "Нет ответа от ИБП, пробую ещё"
             return
         self._read_fails = 0
         if name == "Q1":
@@ -660,14 +849,19 @@ class Monitor:
         for device in devices:
             try:
                 self._transport = open_mega(device)
+                self._hid_misses = 0
+                try:
+                    self._handle_q1(self._transport.query_q1())
+                except (TransportError, ProtocolError, OSError):
+                    pass
                 self._event("info", "link", f"Подключено: {self._transport.label}")
                 with self._lock:
-                    if self._reading is None:
-                        self._mode = "searching"
-                        self._message = "ИБП подключён по USB, читаю состояние"
-                    else:
+                    if self._reading is not None:
                         self._mode = "live"
                         self._message = "Связь есть"
+                    else:
+                        self._mode = "searching"
+                        self._message = "ИБП подключён по USB, читаю состояние"
                 return
             except DeviceBusy:
                 busy = True
@@ -687,19 +881,23 @@ class Monitor:
         with self._lock:
             preferred = self.settings.get("serial_port") or ""
         serial = None
-        if preferred or time.time() - self._serial_checked > 30:
-            self._serial_checked = time.time()
-            try:
-                serial = probe_serial(preferred)
-            except (TransportError, OSError) as exc:
-                last_error = str(exc)
+        try:
+            serial = probe_serial(preferred)
+        except (TransportError, OSError) as exc:
+            last_error = last_error or str(exc)
         if serial is not None:
             self._transport = serial
+            if serial.port and serial.port != preferred:
+                with self._lock:
+                    self.settings["serial_port"] = serial.port
+                    _save_settings(self.settings)
             self._event("info", "link", f"Подключено: {serial.label}")
             with self._lock:
                 self._mode = "live"
                 self._message = "Связь есть"
             return
+        hid_n = len(devices)
+        coms = ", ".join(item["device"] for item in list_serial_ports()) or "нет"
         with self._lock:
             self._mode = "missing"
             if upsmart_running():
@@ -709,8 +907,8 @@ class Monitor:
                 )
             else:
                 self._message = last_error or (
-                    "Бесперебойник не найден. Проверьте USB-кабель. "
-                    "Отдельная программа не нужна."
+                    "Бесперебойник не найден. После переподключения порт мог смениться. "
+                    f"Сейчас HID {hid_n}, COM: {coms}."
                 )
 
     def _maybe_identity(self, force: bool = False) -> None:
@@ -779,19 +977,23 @@ class Monitor:
         mode_changed = bool(self._edges.get("on_battery")) != bool(status.on_battery)
         swap = None if loose else self._note_pack_swap(source == "live", mode_changed)
         reading = status.as_dict()
+        volt = voltage_state(reading.get("input_v"), status.on_battery, settings)
         reading.update(
             {
                 "battery_pct": None if percent is None else round(percent, 1),
                 "runtime_min": minutes,
                 "discharge_seconds": int(discharge),
                 "shutdown_seconds": countdown,
+                "shutdown_kind": self._shutdown_kind,
                 "mode_label": mode_label(status),
                 "ups_kind": ups_kind(status),
                 "mains_ok": not status.on_battery,
                 "load_w": load_watts(status.load_pct, settings.get("ups_kva")),
                 "battery_loose": loose,
                 "battery_swap": swap,
-                "voltage_state": voltage_state(reading.get("input_v"), status.on_battery),
+                "voltage_state": volt,
+                "voltage_note": voltage_note(volt, settings),
+                "volt_limits": voltage_limits(settings),
                 "updated_at": now,
                 "source": source,
             }
@@ -821,14 +1023,45 @@ class Monitor:
         if source == "live":
             self._store(reading)
 
+    def _visible_countdown(self, now: float | None = None) -> int | None:
+        if self._shutdown_held or self._shutdown_at is None:
+            return None
+        return max(0, int(self._shutdown_at - (now if now is not None else time.time())))
+
+    def _clear_shutdown(self) -> None:
+        self._shutdown_at = None
+        self._shutdown_sent = False
+        self._shutdown_kind = None
+
+    def _arm_power(self, kind: str, seconds: int) -> None:
+        self._shutdown_held = False
+        self._shutdown_kind = kind
+        self._shutdown_at = time.time() + int(seconds)
+        self._shutdown_sent = True
+        self._stamp_reading_countdown()
+
+    def _stamp_reading_countdown(self) -> None:
+        with self._lock:
+            if self._reading is None:
+                return
+            self._reading["shutdown_seconds"] = self._visible_countdown()
+            self._reading["shutdown_kind"] = self._shutdown_kind
+
     def _shutdown_countdown(self, on_battery: bool, settings: dict, now: float) -> int | None:
-        if not settings.get("pc_shutdown") or not on_battery or self._shutdown_held:
+        if self._shutdown_held:
             if self._shutdown_sent:
                 self._abort_os_shutdown()
-            self._shutdown_at = None
-            self._shutdown_sent = False
+            self._clear_shutdown()
+            return None
+        if self._shutdown_kind in {"off", "reboot"}:
+            return self._visible_countdown(now)
+        if not settings.get("pc_shutdown") or not on_battery:
+            if self._shutdown_sent:
+                self._abort_os_shutdown()
+            self._clear_shutdown()
             return None
         if self._shutdown_at is None:
+            self._shutdown_kind = "battery"
             self._shutdown_at = now + int(settings["shutdown_delay"])
             self._event("warn", "pc_shutdown", "Запущен отсчёт выключения компьютера")
         left = int(self._shutdown_at - now)
@@ -912,16 +1145,18 @@ class Monitor:
     def _voltage_edges(self, reading: dict) -> None:
         volts = reading.get("input_v")
         on_battery = bool(reading.get("on_battery"))
+        with self._lock:
+            limits = voltage_limits(self.settings)
         shown = "—" if volts is None else f"{float(volts):.1f}"
         checks = (
-            ("voltage_crit_low", "bad", f"Входное напряжение опасно низкое: {shown} В", "info", "Напряжение уже не ниже 180 В"),
-            ("voltage_low", "warn", f"Входное напряжение понижено: {shown} В", "info", "Напряжение снова выше 200 В"),
-            ("voltage_high", "warn", f"Входное напряжение повышено: {shown} В", "info", "Напряжение снова ниже 240 В"),
-            ("voltage_crit_high", "bad", f"Входное напряжение опасно высокое: {shown} В", "info", "Напряжение уже не выше 250 В"),
+            ("voltage_crit_low", "bad", f"Входное напряжение опасно низкое: {shown} В", "info", f"Напряжение уже не ниже {limits['crit_low']:.0f} В"),
+            ("voltage_low", "warn", f"Входное напряжение понижено: {shown} В", "info", f"Напряжение снова выше {limits['low']:.0f} В"),
+            ("voltage_high", "warn", f"Входное напряжение повышено: {shown} В", "info", f"Напряжение снова ниже {limits['high']:.0f} В"),
+            ("voltage_crit_high", "bad", f"Входное напряжение опасно высокое: {shown} В", "info", f"Напряжение уже не выше {limits['crit_high']:.0f} В"),
         )
         for code, on_level, on_text, off_level, off_text in checks:
             previous = bool(self._edges.get(code))
-            active = mains_voltage_active(code, volts, on_battery, previous)
+            active = mains_voltage_active(code, volts, on_battery, previous, limits)
             self._edges[code] = active
             if active and not previous:
                 self._event(on_level, code, on_text)
@@ -954,10 +1189,15 @@ class Monitor:
             self._trace.append(line)
             self._trace = self._trace[-40:]
 
-    def _event(self, level: str, code: str, message: str) -> None:
+    def _event(self, level: str, code: str, message: str, force: bool = False) -> None:
         item = {"t": time.time(), "level": level, "code": code, "message": message}
         with self._lock:
-            if self._events and self._events[-1]["code"] == code and item["t"] - self._events[-1]["t"] < 20:
+            if (
+                not force
+                and self._events
+                and self._events[-1]["code"] == code
+                and item["t"] - self._events[-1]["t"] < 20
+            ):
                 return
             self._events.append(item)
             self._events = self._events[-500:]
@@ -967,7 +1207,7 @@ class Monitor:
             (item["t"], level, code, message),
         )
         self._db.commit()
-        self._telegram.notify(item, reading)
+        self._telegram.notify(item, reading, force=force)
         if item.get("code") in reports.IMPORTANT:
             self._journal_at = 0.0
             self._flush_journal()
@@ -1151,6 +1391,30 @@ def _command_hint(action: str) -> str:
     }.get(action, action)
 
 
+_TG_EVENT_CODES = {
+    "on_battery", "on_battery_clear", "voltage_low", "voltage_low_clear",
+    "voltage_high", "voltage_high_clear", "voltage_crit_low", "voltage_crit_low_clear",
+    "voltage_crit_high", "voltage_crit_high_clear", "battery_low", "battery_low_clear",
+    "battery_loose", "battery_loose_clear", "battery_swap", "fault", "fault_clear",
+    "link_lost", "pc_shutdown", "pc_off", "pc_reboot", "pc_sleep", "pc_hibernate",
+    "startup", "shutdown", "app_restart",
+}
+
+
+def _clean_telegram_events(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    clean = {}
+    for code, item in value.items():
+        if code not in _TG_EVENT_CODES:
+            continue
+        if isinstance(item, dict):
+            clean[code] = {"on": bool(item.get("on", True)), "sound": bool(item.get("sound", True))}
+        else:
+            clean[code] = {"on": bool(item), "sound": not str(code).endswith("_clear")}
+    return clean
+
+
 def _validate(payload: dict) -> tuple[dict, str | None]:
     if not isinstance(payload, dict):
         return {}, "Нужен объект с настройками"
@@ -1171,17 +1435,77 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
         }:
             clean[key] = bool(value)
             continue
+        if key == "telegram_events":
+            clean[key] = _clean_telegram_events(value)
+            continue
+        if key == "spark_lines":
+            allowed = {"in", "out", "load", "batt", "soc", "hz", "temp"}
+            lines = [str(item) for item in (value or []) if str(item) in allowed]
+            clean[key] = lines or ["in", "out"]
+            continue
+        if key == "chart_minutes":
+            try:
+                minutes = int(value)
+            except (TypeError, ValueError):
+                return {}, "Масштаб графика должен быть числом"
+            if minutes not in {15, 60, 360, 1440}:
+                return {}, "Масштаб графика: 15, 60, 360 или 1440 минут"
+            clean[key] = minutes
+            continue
+        if key == "chart_series":
+            series = str(value or "")
+            if series not in {"voltage", "load", "battery", "charge", "freq", "temp"}:
+                return {}, "Неизвестный тип графика"
+            clean[key] = series
+            continue
         if key == "journal_dir":
             text = str(value or "").strip()
             if "\x00" in text or len(text) > 240:
                 return {}, "Путь к журналу слишком длинный"
             clean[key] = str(reports.resolve_journal_dir(text))
             continue
+        if key == "ups_kva":
+            try:
+                kva = float(str(value).strip().replace(",", "."))
+            except (TypeError, ValueError):
+                return {}, "Мощность ИБП должна быть числом"
+            if 20 < kva <= 20000:
+                kva /= 1000
+            kva = round(kva, 3)
+            if not 0.2 <= kva <= 20:
+                return {}, "Мощность ИБП: от 0,2 до 20 кВА, либо ВА целиком (например 720)"
+            clean[key] = kva
+            continue
         if key == "telegram_digest_time":
             clock = parse_clock(value)
             if not clock:
                 return {}, "Время отчёта должно быть в формате ЧЧ:ММ"
             clean[key] = clock
+            continue
+        if key in {"window_x", "window_y"}:
+            if value is None or value == "":
+                clean[key] = None
+                continue
+            try:
+                coord = int(value)
+            except (TypeError, ValueError):
+                return {}, "Положение окна должно быть числом"
+            if not -20000 <= coord <= 20000:
+                return {}, "Положение окна вне экрана"
+            clean[key] = coord
+            continue
+        if key in {"window_width", "window_height"}:
+            try:
+                size = int(value)
+            except (TypeError, ValueError):
+                return {}, "Размер окна должен быть числом"
+            low, high = (960, 8000) if key == "window_width" else (640, 5000)
+            if not low <= size <= high:
+                return {}, "Размер окна вне допустимых пределов"
+            clean[key] = size
+            continue
+        if key == "window_maximized":
+            clean[key] = bool(value)
             continue
         if key not in _LIMITS:
             continue
@@ -1190,7 +1514,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             number = float(value)
         except (TypeError, ValueError):
             return {}, f"Поле «{key}» должно быть числом"
-        if key in {"poll_seconds", "battery_count", "battery_groups", "battery_health", "shutdown_delay"}:
+        if key in {"poll_seconds", "battery_count", "battery_groups", "battery_health", "shutdown_delay", "spark_window"}:
             number = int(number)
         if not low <= number <= high:
             return {}, f"Поле «{key}» вне допустимых пределов"
@@ -1199,6 +1523,12 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
     eod = clean.get("eod_voltage", DEFAULTS["eod_voltage"])
     if eod >= full:
         return {}, "Конец разряда должен быть ниже напряжения полного заряда"
+    crit_low = clean.get("volt_crit_low", DEFAULTS["volt_crit_low"])
+    low = clean.get("volt_low", DEFAULTS["volt_low"])
+    high = clean.get("volt_high", DEFAULTS["volt_high"])
+    crit_high = clean.get("volt_crit_high", DEFAULTS["volt_crit_high"])
+    if not crit_low < low < high < crit_high:
+        return {}, "Пороги сети: сверхнизкое < низкое < высокое < сверхвысокое"
     return clean, None
 
 

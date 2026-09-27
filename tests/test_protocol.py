@@ -1,5 +1,8 @@
 import unittest
+from unittest.mock import patch
 
+from ups.monitor import _validate
+from ups.transport import TransportError, probe_serial
 from ups.protocol import (
     battery_percent,
     battery_voltage_chaotic,
@@ -11,6 +14,7 @@ from ups.protocol import (
     parse_ratings,
     plausible,
     runtime_minutes,
+    voltage_note,
     voltage_state,
 )
 
@@ -125,6 +129,67 @@ class VoltageAlertTests(unittest.TestCase):
     def test_battery_mode_is_not_a_voltage_alarm(self):
         self.assertFalse(mains_voltage_active("voltage_low", 0, True, True))
         self.assertFalse(mains_voltage_active("voltage_crit_low", 12, True, False))
+
+    def test_custom_thresholds(self):
+        limits = {"volt_low": 210, "volt_high": 230, "volt_crit_low": 190, "volt_crit_high": 245}
+        self.assertEqual(voltage_state(205, False, limits), "low")
+        self.assertEqual(voltage_state(235, False, limits), "high")
+        self.assertEqual(voltage_note("low", limits), "Вход ниже 210 В")
+        self.assertTrue(mains_voltage_active("voltage_high", 231, False, False, limits))
+        self.assertFalse(mains_voltage_active("voltage_high", 229, False, False, limits))
+
+    def test_voltage_order_is_checked(self):
+        clean, error = _validate({"volt_low": 240, "volt_high": 200, "volt_crit_low": 180, "volt_crit_high": 250})
+        self.assertIn("Пороги", error or "")
+        self.assertEqual(clean, {})
+
+    def test_ups_kva_accepts_fraction_and_va(self):
+        clean, error = _validate({"ups_kva": "0,72"})
+        self.assertIsNone(error)
+        self.assertEqual(clean["ups_kva"], 0.72)
+        clean, error = _validate({"ups_kva": 720})
+        self.assertIsNone(error)
+        self.assertEqual(clean["ups_kva"], 0.72)
+
+
+class PortScanTests(unittest.TestCase):
+    def test_scan_ports_lists_hid_and_com(self):
+        from ups.monitor import Monitor
+        from ups.transport import DeviceBusy, FoundDevice
+
+        device = FoundDevice("\\\\?\\hid#vid_0001&pid_0000", 1, 0, "", "")
+        with patch("ups.monitor.scan_hid", return_value=[device]), patch(
+            "ups.monitor.list_serial_ports", return_value=[]
+        ), patch("ups.monitor.open_mega", side_effect=DeviceBusy("x")):
+            monitor = Monitor.__new__(Monitor)
+            monitor._transport = None
+            monitor._lock = __import__("threading").Lock()
+            monitor._ports = []
+            monitor._ports_at = 0
+            result = Monitor.scan_ports(monitor)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["hid"][0]["id"], "0001:0000")
+        self.assertEqual(result["hid"][0]["status"], "занят другой программой")
+        self.assertEqual(result["com"], [])
+
+
+class SerialProbeTests(unittest.TestCase):
+    def test_falls_back_when_saved_port_is_gone(self):
+        ports = [
+            {"device": "COM3", "description": "USB-SERIAL CH340", "hwid": "USB VID:PID=1A86:7523"},
+            {"device": "COM5", "description": "USB-SERIAL CH340", "hwid": "USB VID:PID=1A86:7523"},
+        ]
+
+        def fake_open(port):
+            if port == "COM3":
+                raise TransportError("gone")
+            return type("T", (), {"port": port, "label": port})()
+
+        with patch("ups.transport.list_serial_ports", return_value=ports), patch(
+            "ups.transport.open_serial", side_effect=fake_open
+        ):
+            found = probe_serial("COM3")
+        self.assertEqual(found.port, "COM5")
 
 
 if __name__ == "__main__":

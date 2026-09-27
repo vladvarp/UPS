@@ -52,6 +52,20 @@ _CONFIRM = {
     "app_restart": "Перезапустить программу UPS?",
 }
 
+def event_pref(settings: dict | None, code: str) -> tuple[bool, bool]:
+    src = settings or {}
+    item = (src.get("telegram_events") or {}).get(code)
+    if isinstance(item, dict):
+        return bool(item.get("on", True)), bool(item.get("sound", True))
+    if isinstance(item, bool):
+        return item, not str(code).endswith("_clear")
+    if code in {"on_battery", "on_battery_clear"}:
+        return bool(src.get("telegram_notify_power", True)), True
+    if code in {"startup", "shutdown"}:
+        return True, code == "shutdown"
+    return bool(src.get("telegram_notify_alerts", True)), not str(code).endswith("_clear")
+
+
 _ALERTS = {
     "on_battery": True,
     "on_battery_clear": True,
@@ -106,21 +120,24 @@ class TelegramBridge:
         ]
         if not token or not chats:
             return
+        send, sound = event_pref(settings, "shutdown")
+        if not send:
+            return
         stamp = datetime.now().strftime("%H:%M")
         text = f"UPS закрыт в {stamp}"
         done = threading.Event()
 
         def work() -> None:
             try:
-                png = notify_image("shutdown", card_title("shutdown", text))
+                png = notify_image("shutdown", card_title("shutdown", text), text)
                 limit = max(1.0, float(timeout) / max(1, len(chats)))
                 for item in chats:
                     chat_id = item.get("id")
                     try:
-                        _send_photo(token, chat_id, png, text, menu=self._board(chat_id), timeout=limit)
+                        _send_photo(token, chat_id, png, text, menu=self._board(chat_id), timeout=limit, silent=not sound)
                     except TelegramError:
                         try:
-                            _send(token, chat_id, text, menu=self._board(chat_id), timeout=limit)
+                            _send(token, chat_id, text, menu=self._board(chat_id), timeout=limit, silent=not sound)
                         except TelegramError:
                             pass
             except Exception:
@@ -173,19 +190,19 @@ class TelegramBridge:
                 "pair_code": str(settings.get("telegram_pair") or ""),
             }
 
-    def notify(self, event: dict, reading: dict | None) -> None:
+    def notify(self, event: dict, reading: dict | None, force: bool = False) -> None:
         settings = self._host.get_settings_raw()
         if not settings.get("telegram_token"):
             return
         code = event.get("code") or ""
-        if code in {"on_battery", "on_battery_clear"} and not settings.get("telegram_notify_power", True):
-            return
-        if code not in {"on_battery", "on_battery_clear"} and not settings.get("telegram_notify_alerts", True):
-            return
-        if code not in _ALERTS:
-            return
+        send, _sound = event_pref(settings, code)
+        if not force:
+            if not send:
+                return
+            if code not in _ALERTS:
+                return
         text = format_alert(event, reading)
-        self._broadcast_notice(str(code), text)
+        self._broadcast_notice(str(code), text, force=force)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -230,12 +247,29 @@ class TelegramBridge:
                 self._ok = True
                 self._username = username
                 self._error = ""
+            self._install_menu(token)
             return True
         except TelegramError as exc:
             with self._lock:
                 self._ok = False
                 self._error = str(exc)
             return False
+
+    def _install_menu(self, token: str) -> None:
+        try:
+            _api(token, "setMyCommands", {
+                "commands": [
+                    {"command": "status", "description": "Запрос состояния"},
+                    {"command": "screenshot", "description": "Скриншот"},
+                    {"command": "events", "description": "Журнал"},
+                ],
+                "scope": {"type": "default"},
+            }, timeout=8)
+            _api(token, "setChatMenuButton", {
+                "menu_button": {"type": "commands"},
+            }, timeout=8)
+        except TelegramError:
+            pass
 
     def _handle(self, update: dict) -> None:
         if "callback_query" in update:
@@ -267,7 +301,8 @@ class TelegramBridge:
         if lowered in {"назад", "меню"}:
             self._open_menu(chat_id, "root", "Главное меню.")
             return
-        if lowered in {"состояние", "status"}:
+        head = lowered.split()[0] if lowered else ""
+        if lowered in {"состояние", "status", "запрос состояния"} or head in {"состояние", "status"}:
             self._notice(chat_id, "status", self._host.telegram_status_text())
             return
         if lowered in {"отчёт дня", "отчет дня", "отчёт", "отчет", "report"}:
@@ -279,10 +314,10 @@ class TelegramBridge:
         if lowered in {"неделя", "week"}:
             self._notice(chat_id, "report", self._host.telegram_report_text(24 * 7))
             return
-        if lowered in {"журнал", "events"}:
+        if lowered in {"журнал", "events"} or head in {"журнал", "events"}:
             self._notice(chat_id, "events", self._host.telegram_events_text())
             return
-        if lowered in {"скриншот", "screenshot", "экран"}:
+        if lowered in {"скриншот", "screenshot", "экран"} or head in {"скриншот", "screenshot", "экран"}:
             self._send_screenshot(chat_id)
             return
         if lowered in {"перезапуск программы", "перезагрузить программу", "рестарт"}:
@@ -429,23 +464,27 @@ class TelegramBridge:
         stamp = datetime.now().strftime("%H:%M")
         self._broadcast_notice("startup", f"UPS запущен в {stamp}\n\n{self._host.telegram_status_text()}")
 
-    def _notice(self, chat_id, code: str, text: str, inline: list | None = None) -> None:
+    def _notice(self, chat_id, code: str, text: str, inline: list | None = None, silent: bool = False) -> None:
         token = self._token
         if not token or not text:
             return
-        png = notify_image(code, card_title(code, text))
+        png = notify_image(code, card_title(code, text), text)
         try:
-            _send_photo(token, chat_id, png, text[:1024], inline=inline, menu=self._board(chat_id))
+            _send_photo(token, chat_id, png, text[:1024], inline=inline, menu=self._board(chat_id), silent=silent)
             if len(text) > 1024:
-                _send(token, chat_id, text[1024:], menu=None if inline else self._board(chat_id))
+                _send(token, chat_id, text[1024:], menu=None if inline else self._board(chat_id), silent=silent)
         except TelegramError:
-            _send(token, chat_id, text, menu=None if inline else self._board(chat_id), inline=inline)
+            _send(token, chat_id, text, menu=None if inline else self._board(chat_id), inline=inline, silent=silent)
 
-    def _broadcast_notice(self, code: str, text: str) -> None:
+    def _broadcast_notice(self, code: str, text: str, force: bool = False) -> None:
         token = self._token
         if not token or not text:
             return
         settings = self._host.get_settings_raw()
+        send, sound = event_pref(settings, code)
+        if not send and not force:
+            return
+        silent = not sound
         for item in settings.get("telegram_chats") or []:
             if not isinstance(item, dict):
                 continue
@@ -453,7 +492,7 @@ class TelegramBridge:
             if chat_id is None:
                 continue
             try:
-                self._notice(chat_id, code, text)
+                self._notice(chat_id, code, text, silent=silent)
             except TelegramError as exc:
                 with self._lock:
                     self._error = str(exc)
@@ -563,15 +602,9 @@ def status_lines(reading: dict) -> list[str]:
         f"Сеть: {'есть' if reading.get('mains_ok') else 'нет'}",
         f"Вход {fmt(reading.get('input_v'))} В · выход {fmt(reading.get('output_v'))} В",
     ]
-    volt = reading.get("voltage_state")
-    volt_note = {
-        "low": "Вход ниже 200 В",
-        "high": "Вход выше 240 В",
-        "crit_low": "Вход ниже 180 В",
-        "crit_high": "Вход выше 250 В",
-    }.get(volt)
+    volt_note = reading.get("voltage_note")
     if volt_note:
-        lines.append(volt_note)
+        lines.append(str(volt_note))
     lines.extend([
         load_line,
         f"Батарея {fmt(reading.get('battery_v'))} В · {fmt(reading.get('battery_pct'), 0)}%",
@@ -646,7 +679,8 @@ def help_text(username: str) -> str:
         f"{who} следит за питанием.\n"
         "ПК — выключение, сон, перезагрузка и гибернация.\n"
         "ПО — скриншот и перезапуск программы.\n"
-        "Отчёты — состояние, журнал, отчёт дня и сводка в HTML."
+        "Отчёты — состояние, журнал, отчёт дня и сводка в HTML.\n"
+        "Слева от поля ввода — состояние, скриншот и журнал."
     )
 
 
@@ -731,11 +765,12 @@ def _menu_rows(name: str | None) -> list[list[str]]:
     return _MENUS.get(name or "root") or _MENUS["root"]
 
 
-def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12) -> None:
+def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12, silent: bool = False) -> None:
     payload = {
         "chat_id": chat_id,
         "text": text[:3900],
         "disable_web_page_preview": True,
+        "disable_notification": bool(silent),
     }
     if inline:
         payload["reply_markup"] = {"inline_keyboard": [inline] if inline and isinstance(inline[0], dict) else inline}
@@ -747,7 +782,7 @@ def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list 
     _api(token, "sendMessage", payload, timeout=timeout)
 
 
-def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list | None = None, menu: str | None = "root", timeout: float = 20) -> None:
+def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list | None = None, menu: str | None = "root", timeout: float = 20, silent: bool = False) -> None:
     boundary = "----UPSFormBoundary7"
     if inline:
         markup = json.dumps({
@@ -768,6 +803,8 @@ def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list
     field("chat_id", str(chat_id))
     if caption:
         field("caption", caption[:1024])
+    if silent:
+        field("disable_notification", "true")
     field("reply_markup", markup)
     parts.append(
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"ups.png\"\r\n"

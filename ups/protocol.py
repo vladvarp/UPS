@@ -253,12 +253,16 @@ VOLTAGE_CRIT_LOW = 180.0
 VOLTAGE_CRIT_HIGH = 250.0
 _VOLTAGE_HYST = 5.0
 _MAINS_PRESENT = 80.0
-_VOLTAGE_BANDS = {
-    "voltage_low": (VOLTAGE_LOW, VOLTAGE_LOW + _VOLTAGE_HYST, "below"),
-    "voltage_crit_low": (VOLTAGE_CRIT_LOW, VOLTAGE_CRIT_LOW + _VOLTAGE_HYST, "below"),
-    "voltage_high": (VOLTAGE_HIGH, VOLTAGE_HIGH - _VOLTAGE_HYST, "above"),
-    "voltage_crit_high": (VOLTAGE_CRIT_HIGH, VOLTAGE_CRIT_HIGH - _VOLTAGE_HYST, "above"),
-}
+
+
+def voltage_limits(settings: dict | None = None) -> dict:
+    src = settings or {}
+    return {
+        "low": _limit_num(src.get("volt_low"), VOLTAGE_LOW),
+        "high": _limit_num(src.get("volt_high"), VOLTAGE_HIGH),
+        "crit_low": _limit_num(src.get("volt_crit_low"), VOLTAGE_CRIT_LOW),
+        "crit_high": _limit_num(src.get("volt_crit_high"), VOLTAGE_CRIT_HIGH),
+    }
 
 
 def mains_present(volts, on_battery: bool) -> bool:
@@ -268,29 +272,55 @@ def mains_present(volts, on_battery: bool) -> bool:
         return False
 
 
-def voltage_state(volts, on_battery: bool) -> str:
+def voltage_state(volts, on_battery: bool, limits: dict | None = None) -> str:
     if not mains_present(volts, on_battery):
         return "idle"
+    bands = voltage_limits(limits)
     value = float(volts)
-    if value < VOLTAGE_CRIT_LOW:
+    if value < bands["crit_low"]:
         return "crit_low"
-    if value < VOLTAGE_LOW:
+    if value < bands["low"]:
         return "low"
-    if value > VOLTAGE_CRIT_HIGH:
+    if value > bands["crit_high"]:
         return "crit_high"
-    if value > VOLTAGE_HIGH:
+    if value > bands["high"]:
         return "high"
     return "ok"
 
 
-def mains_voltage_active(code: str, volts, on_battery: bool, previous: bool) -> bool:
+def voltage_note(state: str, limits: dict | None = None) -> str | None:
+    bands = voltage_limits(limits)
+    return {
+        "low": f"Вход ниже {bands['low']:.0f} В",
+        "high": f"Вход выше {bands['high']:.0f} В",
+        "crit_low": f"Вход ниже {bands['crit_low']:.0f} В",
+        "crit_high": f"Вход выше {bands['crit_high']:.0f} В",
+    }.get(state)
+
+
+def mains_voltage_active(code: str, volts, on_battery: bool, previous: bool, limits: dict | None = None) -> bool:
     if not mains_present(volts, on_battery):
         return False
-    trigger, clear, side = _VOLTAGE_BANDS[code]
+    bands = voltage_limits(limits)
+    hyst = _VOLTAGE_HYST
+    table = {
+        "voltage_low": (bands["low"], bands["low"] + hyst, "below"),
+        "voltage_crit_low": (bands["crit_low"], bands["crit_low"] + hyst, "below"),
+        "voltage_high": (bands["high"], bands["high"] - hyst, "above"),
+        "voltage_crit_high": (bands["crit_high"], bands["crit_high"] - hyst, "above"),
+    }
+    trigger, clear, side = table[code]
     value = float(volts)
     if side == "below":
         return value < trigger if not previous else value < clear
     return value > trigger if not previous else value > clear
+
+
+def _limit_num(value, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
 
 
 def load_watts(load_pct: float | None, kva: float | None) -> int | None:

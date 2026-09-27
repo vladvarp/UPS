@@ -16,10 +16,11 @@ from pathlib import Path
 from ups import APP_NAME, APP_TAGLINE
 from ups.monitor import Monitor
 from ups.server import bind, serve
-from ups.screenshot import capture_main_window
+from ups.screenshot import capture_main_window, read_window_geom, saved_window_geom
 from ups.tray import Tray
 
 ICON = Path(__file__).resolve().parent / "static" / "icon.ico"
+_GEOM_SAVED = 0.0
 
 
 def main() -> None:
@@ -58,29 +59,65 @@ def _run_window(monitor: Monitor, port: int) -> None:
         monitor.stop()
         _alert(f"Сервер {APP_NAME} не успел запуститься.")
         return
-    window = webview.create_window(
-        APP_NAME,
-        url,
-        width=1320,
-        height=860,
-        min_size=(960, 640),
-        text_select=True,
-    )
+    geom = saved_window_geom(monitor.settings)
+    create = {
+        "width": geom["width"],
+        "height": geom["height"],
+        "min_size": (960, 640),
+        "text_select": True,
+    }
+    if geom["x"] is not None and geom["y"] is not None:
+        create["x"] = geom["x"]
+        create["y"] = geom["y"]
+    window = webview.create_window(APP_NAME, url, **create)
     tray = Tray(window)
     monitor.set_desktop_quit(tray.apply)
     monitor.set_app_restart(_restart_program)
-    tray.set_before_quit(monitor.announce_close)
+
+    def _before_quit() -> None:
+        _save_window_geom(monitor, window, force=True)
+        monitor.announce_close()
+
+    tray.set_before_quit(_before_quit)
     monitor.set_screenshot(lambda: capture_main_window(window))
     window.events.closing += tray.on_closing
     window.events.minimized += tray.on_minimized
+    try:
+        window.events.resized += lambda: _save_window_geom(monitor, window)
+        window.events.moved += lambda: _save_window_geom(monitor, window)
+    except Exception:
+        pass
+
+    def _shown() -> None:
+        if geom["maximized"]:
+            try:
+                window.maximize()
+            except Exception:
+                pass
+
     if ICON.is_file():
-        webview.start(icon=str(ICON))
+        webview.start(_shown, icon=str(ICON))
     else:
-        webview.start()
+        webview.start(_shown)
     tray.stop()
     httpd.shutdown()
     httpd.server_close()
     monitor.stop()
+
+
+def _save_window_geom(monitor: Monitor, window, force: bool = False) -> None:
+    global _GEOM_SAVED
+    now = time.time()
+    if not force and now - _GEOM_SAVED < 0.8:
+        return
+    geom = read_window_geom(window)
+    if not geom:
+        return
+    _GEOM_SAVED = now
+    try:
+        monitor.update_settings(geom)
+    except Exception:
+        pass
 
 
 def _claim_app_id() -> None:

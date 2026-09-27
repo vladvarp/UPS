@@ -3,13 +3,14 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from ups.monitor import _public_settings, _validate
+from ups.monitor import SIMULATIONS, _public_settings, _validate
 from ups.notify_art import _fit_title, card_title, notify_image
 from ups.telegram import (
     TOKEN_RE,
     TelegramBridge,
     callback_fresh,
     digest_due,
+    event_pref,
     format_alert,
     format_events,
     format_report,
@@ -39,6 +40,38 @@ class TokenTests(unittest.TestCase):
         self.assertTrue(digest_due(now, "07:30"))
         self.assertFalse(digest_due(now, "21:00"))
 
+    def test_event_pref_and_chart_settings(self):
+        send, sound = event_pref({"telegram_events": {"fault": {"on": True, "sound": False}}}, "fault")
+        self.assertTrue(send)
+        self.assertFalse(sound)
+        send, sound = event_pref({"telegram_events": {"fault": {"on": False, "sound": True}}}, "fault")
+        self.assertFalse(send)
+        clean, error = _validate({
+            "spark_lines": ["in", "load", "nope"],
+            "spark_window": 1800,
+            "chart_minutes": 360,
+            "chart_series": "charge",
+            "telegram_events": {"on_battery": {"on": True, "sound": False}, "unknown": {"on": True}},
+        })
+        self.assertIsNone(error)
+        self.assertEqual(clean["spark_lines"], ["in", "load"])
+        self.assertEqual(clean["spark_window"], 1800)
+        self.assertEqual(clean["chart_minutes"], 360)
+        self.assertEqual(clean["chart_series"], "charge")
+        self.assertEqual(clean["telegram_events"]["on_battery"], {"on": True, "sound": False})
+        self.assertNotIn("unknown", clean["telegram_events"])
+        geom, error = _validate({
+            "window_x": -80,
+            "window_y": 40,
+            "window_width": 1400,
+            "window_height": 900,
+            "window_maximized": True,
+        })
+        self.assertIsNone(error)
+        self.assertEqual(geom["window_x"], -80)
+        self.assertEqual(geom["window_width"], 1400)
+        self.assertTrue(geom["window_maximized"])
+
 
 class ReportTests(unittest.TestCase):
     def test_status_mentions_mains(self):
@@ -67,8 +100,9 @@ class ReportTests(unittest.TestCase):
             "input_v": 192,
             "output_v": 220,
             "voltage_state": "low",
+            "voltage_note": "Вход ниже 195 В",
         })
-        self.assertIn("Вход ниже 200 В", "\n".join(lines))
+        self.assertIn("Вход ниже 195 В", "\n".join(lines))
 
     def test_status_mentions_pack_swap(self):
         lines = status_lines({
@@ -112,9 +146,14 @@ class ReportTests(unittest.TestCase):
             "voltage_crit_low", "voltage_crit_high",
         ]
         pictures = {}
+        from io import BytesIO
+        from PIL import Image
         for code in codes:
             png = notify_image(code)
             self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"), code)
+            frame = Image.open(BytesIO(png))
+            self.assertGreater(frame.size[0], frame.size[1], code)
+            self.assertNotEqual(frame.size, (768, 768), code)
             pictures[code] = png
         self.assertNotEqual(pictures["on_battery"], pictures["on_battery_clear"])
         self.assertNotEqual(pictures["fault"], pictures["pc_sleep"])
@@ -126,7 +165,7 @@ class ReportTests(unittest.TestCase):
         long = "Напряжение батареи скачет — похоже, батареи отключены от ИБП"
         self.assertEqual(card_title("battery_loose", long), "Батареи отключены")
         from PIL import Image, ImageDraw
-        draw = ImageDraw.Draw(Image.new("RGB", (768, 768)))
+        draw = ImageDraw.Draw(Image.new("RGB", (1280, 640)))
         _title_font, lines, _step = _fit_title(draw, long)
         joined = " ".join(lines)
         self.assertIn("отключены", joined)
@@ -170,6 +209,15 @@ class ReportTests(unittest.TestCase):
             bot.announce_stop(0.8)
         self.assertLess(time.time() - started, 2.0)
         self.assertEqual(card_title("shutdown"), "UPS закрыт")
+
+    def test_simulation_catalog_is_safe_software_only(self):
+        codes = [item["code"] for item in SIMULATIONS]
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertTrue({"on_battery", "pc_off", "app_restart", "voltage_crit_high"}.issubset(codes))
+        for item in SIMULATIONS:
+            self.assertIn(item["level"], {"ok", "info", "warn", "bad"})
+            self.assertTrue(item["message"].startswith("Симуляция"))
+            self.assertIn(item["group"], {"Сеть", "Батарея", "ИБП", "ПК", "Программа"})
 
     def test_old_confirm_button_is_ignored(self):
         now = time.time()

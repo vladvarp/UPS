@@ -92,14 +92,19 @@ def _handler(monitor: Monitor):
             route = urlparse(self.path).path
             payload = self._body()
             if route == "/api/command":
-                self._json(200, monitor.command(str(payload.get("action", ""))))
+                action = str(payload.get("action", ""))
+                if action == "simulate_event":
+                    self._json(200, monitor.simulate_event(str(payload.get("code", ""))))
+                    return
+                self._json(200, monitor.command(action))
                 return
             if route == "/api/settings":
                 result = monitor.update_settings(payload)
                 self._json(200 if result.get("ok") else 400, result)
                 return
             if route == "/api/quit":
-                self._json(200, monitor.desktop_quit(str(payload.get("action", "stay"))))
+                action = str(payload.get("action") or "close")
+                self._json(200, monitor.desktop_quit(action))
                 return
             if route == "/api/reports/open-folder":
                 self._json(200, monitor.open_journal_folder())
@@ -119,6 +124,12 @@ def _handler(monitor: Monitor):
                 return
             if route == "/api/events":
                 self._json(200, monitor.events())
+                return
+            if route == "/api/simulations":
+                self._json(200, monitor.simulations())
+                return
+            if route == "/api/ports":
+                self._json(200, monitor.scan_ports())
                 return
             if route == "/api/settings":
                 self._json(200, monitor.get_settings())

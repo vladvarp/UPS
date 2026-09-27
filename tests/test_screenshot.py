@@ -3,7 +3,7 @@ import unittest
 
 from PIL import Image
 
-from ups.screenshot import _borderless_style, _image_is_blank, _trim_letterbox
+from ups.screenshot import _borderless_style, _image_is_blank, _trim_letterbox, saved_window_geom
 
 
 def _png(color) -> bytes:
@@ -37,6 +37,23 @@ class ScreenshotTests(unittest.TestCase):
         self.assertEqual(cleaned & 0x00C00000, 0)
         self.assertEqual(cleaned & 0x00040000, 0)
         self.assertTrue(cleaned & 0x10000000)
+
+    def test_saved_window_geom_defaults(self):
+        geom = saved_window_geom({})
+        self.assertEqual(geom["width"], 1320)
+        self.assertEqual(geom["height"], 860)
+        self.assertIsNone(geom["x"])
+        self.assertFalse(geom["maximized"])
+        placed = saved_window_geom({
+            "window_x": 80,
+            "window_y": 60,
+            "window_width": 1400,
+            "window_height": 900,
+            "window_maximized": True,
+        })
+        self.assertEqual(placed["width"], 1400)
+        self.assertEqual(placed["x"], 80)
+        self.assertTrue(placed["maximized"])
 
 
 if __name__ == "__main__":

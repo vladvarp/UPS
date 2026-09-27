@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=29">
+  <link rel="stylesheet" href="/app.css?v=55">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -39,6 +39,9 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 4L3 11l6 2 2 6 3-4 5 3z"/><path d="M9 13l12-9"/></svg>
       </button>
     </nav>
+    <button type="button" class="icon" id="openLab" title="Тесты" aria-label="Тесты">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v7L5 18a4 4 0 0 0 3.5 6h7A4 4 0 0 0 19 18l-4-8V3"/><path d="M8 3h8"/><path d="M8 14h8"/></svg>
+    </button>
     <button type="button" class="icon" id="openSettings" aria-label="Настройки">⚙</button>
   </header>
 
@@ -46,7 +49,6 @@
     <span id="demoText"></span>
     <button type="button" id="leaveDemo">Подключить настоящий</button>
   </div>
-  <div class="banner alert" id="alarmBanner" hidden></div>
 
   <main>
     <section class="view on" id="view-overview" data-view="overview">
@@ -56,7 +58,7 @@
         <p id="gateText">Ищу ИБП по USB.</p>
         <div class="row">
           <button type="button" class="primary" id="gateRescan">Искать снова</button>
-          <button type="button" class="ghost" id="gateDemo">Посмотреть интерфейс</button>
+          <button type="button" class="ghost" id="gateScan">Сканировать порты</button>
         </div>
       </div>
 
@@ -69,25 +71,62 @@
             <p class="meta">к выходу <strong id="deltaV">—</strong></p>
           </article>
 
-          <div class="schematic">
-            <div class="conduit" id="hopBypass">
-              <span class="node" id="nodeBypass">Сеть</span>
-              <div class="rail" aria-hidden="true">
-                <i></i><i></i><i></i><i></i>
+          <div class="schematic" id="schematic" data-mode="mains">
+            <div class="scheme-head">
+              <span class="scheme-mode" id="schMode">LINE</span>
+              <span class="scheme-key ac">AC ~</span>
+              <span class="scheme-key dc">DC =</span>
+              <span class="scheme-volt" id="schVolt" hidden></span>
+              <button type="button" class="sch-stop" id="schStopSim" hidden>Стоп симуляции</button>
+            </div>
+            <div class="scheme-hud">
+              <div class="scheme-row scheme-ac">
+                <article class="mod path-mains" data-slot="in">
+                  <p class="mod-k">вход</p>
+                  <h3>Сеть</h3>
+                  <strong id="schInV">—</strong>
+                </article>
+                <div class="trace ac path-mains" data-slot="ac-a"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
+                <article class="mod path-mains" data-slot="bypass">
+                  <p class="mod-k">тракт</p>
+                  <h3>Байпас</h3>
+                </article>
+                <div class="trace ac path-mains" data-slot="ac-b"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
+                <article class="mod path-out" data-slot="out">
+                  <p class="mod-k">нагрузка</p>
+                  <h3>Выход</h3>
+                  <strong id="schOutV">—</strong>
+                </article>
               </div>
-              <b class="chevron" aria-hidden="true"></b>
-            </div>
-            <div class="bank">
-              <div class="pack" id="battPack"></div>
-              <p class="cell-cap" id="cellCap">—</p>
-            </div>
-            <div class="conduit dim" id="hopInverter">
-              <span class="node" id="nodeInverter">Инвертор</span>
-              <div class="rail" aria-hidden="true">
-                <i></i><i></i><i></i><i></i>
+              <div class="scheme-row scheme-drop"></div>
+              <div class="trace ac vert path-mains" data-slot="drop"><span class="beam"></span><b></b><i></i><i></i></div>
+              <div class="trace ac vert path-batt" data-slot="rise"><span class="beam"></span><b></b><i></i><i></i></div>
+              <div class="scheme-row scheme-dc">
+                <article class="mod path-mains" data-slot="xfmr">
+                  <p class="mod-k">обмотка</p>
+                  <h3>Трансф.</h3>
+                  <em class="avr">AVR</em>
+                </article>
+                <div class="trace dc path-mains" data-slot="dc-a"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
+                <article class="mod pack-mod" data-slot="pack">
+                  <p class="mod-k">шина</p>
+                  <h3>АКБ</h3>
+                  <div class="pack" id="battPack"></div>
+                  <p class="cell-cap" id="cellCap">—</p>
+                </article>
+                <div class="trace dc path-batt" data-slot="dc-b"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
+                <article class="mod path-batt" data-slot="inv">
+                  <p class="mod-k">DC → AC</p>
+                  <h3>Инвертор</h3>
+                </article>
               </div>
-              <b class="chevron" aria-hidden="true"></b>
             </div>
+            <aside class="scheme-count" id="schCount" hidden>
+              <p class="mod-k">отсчёт</p>
+              <strong id="schCountVal">00:00:00</strong>
+              <p id="schCountNote">выключение ПК</p>
+              <button type="button" class="sch-stop" id="schCancelOff">Отменить</button>
+            </aside>
           </div>
 
           <article class="card end out hud">
@@ -132,11 +171,21 @@
 
         <section class="spark-card">
           <header>
-            <h2>Сеть и выход, 15 минут</h2>
-            <p id="sparkNote"></p>
+            <div>
+              <h2 id="sparkTitle">Живой график</h2>
+              <p id="sparkNote"></p>
+            </div>
+            <div class="spark-nav">
+              <button type="button" class="spark-btn" id="sparkPanLeft" title="Назад" aria-label="Назад">‹</button>
+              <button type="button" class="spark-btn" id="sparkZoomOut" title="Мельче" aria-label="Мельче">−</button>
+              <span id="sparkRange">15 мин</span>
+              <button type="button" class="spark-btn" id="sparkZoomIn" title="Крупнее" aria-label="Крупнее">+</button>
+              <button type="button" class="spark-btn" id="sparkPanRight" title="Вперёд" aria-label="Вперёд">›</button>
+              <button type="button" class="spark-btn accent" id="sparkReset" hidden>Сброс</button>
+            </div>
           </header>
+          <div class="spark-lines" id="sparkLines"></div>
           <canvas id="spark" data-h="168" height="168"></canvas>
-          <p class="legend"><i class="in"></i> вход <i class="out"></i> выход</p>
         </section>
 
         <div class="actions">
@@ -158,6 +207,7 @@
           <button type="button" class="on" data-series="voltage">Напряжение</button>
           <button type="button" data-series="load">Нагрузка</button>
           <button type="button" data-series="battery">Батарея</button>
+          <button type="button" data-series="charge">Заряд</button>
           <button type="button" data-series="freq">Частота</button>
           <button type="button" data-series="temp">Температура</button>
         </div>
@@ -210,6 +260,7 @@
           <h2>Обмен</h2>
           <ol class="trace" id="devTrace"></ol>
           <h2>Порты</h2>
+          <button type="button" class="ghost" id="devScan">Сканировать порты</button>
           <ul id="devPorts"></ul>
         </article>
       </div>
@@ -277,16 +328,7 @@
           <article class="card tg-card">
             <p class="step">Сообщения</p>
             <h3>О чём писать</h3>
-            <label class="switch">
-              <input id="tgNotifyPower" name="telegram_notify_power" type="checkbox">
-              <span></span>
-              <em>Сеть пропала или вернулась</em>
-            </label>
-            <label class="switch">
-              <input id="tgNotifyAlerts" name="telegram_notify_alerts" type="checkbox">
-              <span></span>
-              <em>Батарея, авария, потеря связи с ИБП</em>
-            </label>
+            <p>События бота включаются справа. Здесь только ежедневный отчёт.</p>
             <div class="digest-block">
               <label class="switch">
                 <input id="tgDigest" name="telegram_digest" type="checkbox">
@@ -311,6 +353,14 @@
               </div>
             </div>
           </article>
+
+          <article class="card tg-card tg-events">
+            <p class="step">События бота</p>
+            <h3>Что слать и со звуком ли</h3>
+            <p>Каждое событие отдельно. Без звука телефон получит карточку тихо.</p>
+            <div class="tg-event-head"><span>Событие</span><span>Бот</span><span>Звук</span></div>
+            <div class="tg-event-list" id="tgEventList"></div>
+          </article>
         </div>
       </div>
     </section>
@@ -333,16 +383,36 @@
         <label>Батарей в серии<input name="battery_count" type="number" min="1" max="8" step="1"></label>
         <label>Параллельных групп<input name="battery_groups" type="number" min="1" max="6" step="1"></label>
         <label>Ёмкость одной, А·ч<input name="battery_ah" type="number" min="1" max="300" step="0.1"></label>
-        <label>Мощность ИБП, кВА<input name="ups_kva" type="number" min="0.2" max="20" step="0.1"></label>
+        <label>Мощность ИБП, кВА<input name="ups_kva" type="number" min="0.2" max="20000" step="0.01" lang="ru" title="0,72 кВА или 720 ВА"></label>
         <label>Полный заряд одной, В<input name="full_voltage" type="number" min="12" max="15" step="0.1"></label>
         <label>Конец разряда одной, В<input name="eod_voltage" type="number" min="9" max="13" step="0.1"></label>
         <label>Состояние батареи, %<input name="battery_health" type="number" min="10" max="100" step="1"></label>
+        <label>Низкое напряжение, В<input name="volt_low" type="number" min="80" max="300" step="1"></label>
+        <label>Высокое напряжение, В<input name="volt_high" type="number" min="80" max="300" step="1"></label>
+        <label>Сверхнизкое, В<input name="volt_crit_low" type="number" min="80" max="300" step="1"></label>
+        <label>Сверхвысокое, В<input name="volt_crit_high" type="number" min="80" max="300" step="1"></label>
         <label class="wide">COM-порт, если кабель последовательный<input name="serial_port" type="text" placeholder="пусто — только USB"></label>
-        <label class="check"><input name="sound" type="checkbox"> Звук, когда пропадает сеть</label>
-        <label class="check"><input name="autostart" type="checkbox"> Запускать UPS вместе с Windows</label>
-        <label class="check"><input name="journal_enabled" type="checkbox"> Вести журнал и суточные отчёты</label>
+        <label class="check switch">
+          <input name="sound" type="checkbox">
+          <span></span>
+          <em>Звук, когда пропадает сеть</em>
+        </label>
+        <label class="check switch">
+          <input name="autostart" type="checkbox">
+          <span></span>
+          <em>Запускать UPS вместе с Windows</em>
+        </label>
+        <label class="check switch">
+          <input name="journal_enabled" type="checkbox">
+          <span></span>
+          <em>Вести журнал и суточные отчёты</em>
+        </label>
         <label class="wide">Папка журнала<input name="journal_dir" type="text" placeholder="C:\Users\Имя\UPS"></label>
-        <label class="check"><input name="pc_shutdown" type="checkbox"> Выключать этот компьютер от батареи</label>
+        <label class="check switch">
+          <input name="pc_shutdown" type="checkbox">
+          <span></span>
+          <em>Выключать этот компьютер от батареи</em>
+        </label>
         <label>Через, секунд<input name="shutdown_delay" type="number" min="30" max="3600" step="10"></label>
       </div>
       <footer>
@@ -350,6 +420,33 @@
         <button type="submit" class="primary">Сохранить</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog id="scanDialog" class="lab-dialog">
+    <header>
+      <div>
+        <p class="eyebrow">Инструменты</p>
+        <h2>Поиск порта</h2>
+      </div>
+      <button type="button" class="icon" id="closeScan" aria-label="Закрыть">×</button>
+    </header>
+    <p class="lead">Ручной просмотр USB HID и COM. Нажмите устройство, чтобы подключиться к нему.</p>
+    <button type="button" class="ghost" id="scanAgain">Сканировать сейчас</button>
+    <p class="lead" id="scanMsg"></p>
+    <div class="lab-groups" id="scanGroups"></div>
+  </dialog>
+
+  <dialog id="labDialog" class="lab-dialog">
+    <header>
+      <div>
+        <p class="eyebrow">Только программа</p>
+        <h2>Симуляции</h2>
+      </div>
+      <button type="button" class="icon" id="closeLab" aria-label="Закрыть">×</button>
+    </header>
+    <p class="lead">Журнал, модальное окно и Telegram получат событие. ИБП и питание компьютера не трогаем.</p>
+    <button type="button" class="ghost" id="stopSim" hidden>Остановить симуляцию</button>
+    <div class="lab-groups" id="labGroups"></div>
   </dialog>
 
   <dialog id="quitDialog" class="quit-dialog">
@@ -363,7 +460,35 @@
     </div>
   </dialog>
 
+  <div class="notice-dock">
+    <div class="alert-pop" id="alertModal" hidden>
+      <div class="alert-card" id="alertCard">
+        <i class="alert-scan"></i>
+        <svg class="alert-art" id="alertArt" viewBox="0 0 120 120" aria-hidden="true"></svg>
+        <div class="alert-copy">
+          <p class="alert-kicker" id="alertKicker">Событие</p>
+          <h2 id="alertTitle"></h2>
+          <p id="alertText"></p>
+          <p class="alert-count" id="alertCount" hidden></p>
+          <div class="alert-meta">
+            <time id="alertTime"></time>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notice-inbox" id="noticeInbox" hidden>
+      <header>
+        <p class="eyebrow">Область уведомлений</p>
+        <button type="button" class="ghost" id="noticeClear">Очистить</button>
+      </header>
+      <ol id="noticeList"></ol>
+    </div>
+    <button type="button" class="notice-btn" id="noticeBtn" title="Уведомления" aria-label="Уведомления">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 1 1 12 0c0 4 2 5 2 5H4s2-1 2-5"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>
+      <em id="noticeBadge" hidden>0</em>
+    </button>
+  </div>
   <div class="toast" id="toast" hidden></div>
-  <script src="/app.js?v=29"></script>
+  <script src="/app.js?v=56"></script>
 </body>
 </html>

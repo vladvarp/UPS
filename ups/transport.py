@@ -402,15 +402,33 @@ def _likely_serial(description: str, hwid: str) -> bool:
     return any(key in blob for key in keys)
 
 
+def hid_still_there(path: str) -> bool:
+    """True if this HID path is still among the devices Windows lists."""
+    want = (path or "").lower()
+    if not want:
+        return False
+    return any(item.lower() == want for item in _hid_paths())
+
+
 def probe_serial(preferred: str = "") -> SerialTransport | None:
+    """Open the saved COM port, then any other likely adapter if that port is gone."""
+    preferred = (preferred or "").strip()
+    order: list[str] = []
     if preferred:
-        return open_serial(preferred)
+        order.append(preferred)
     for port in list_serial_ports():
-        if not _likely_serial(port["description"], port["hwid"]):
+        device = str(port.get("device") or "")
+        if not device:
             continue
+        if preferred and device.upper() == preferred.upper():
+            continue
+        if not _likely_serial(port.get("description") or "", port.get("hwid") or ""):
+            continue
+        order.append(device)
+    for device in order:
         try:
-            return open_serial(port["device"])
-        except TransportError:
+            return open_serial(device)
+        except (TransportError, OSError):
             continue
     return None
 
