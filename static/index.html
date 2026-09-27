@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UPS — монитор питания</title>
+  <link rel="stylesheet" href="/app.css?v=29">
+  <link rel="icon" type="image/png" href="/icon.png">
+</head>
+<body data-power="idle">
+  <header class="top">
+    <div class="brand">
+      <img class="mark" src="/icon.svg" alt="" width="36" height="36">
+      <div>
+        <h1>UPS</h1>
+        <p>монитор питания</p>
+      </div>
+    </div>
+    <p class="pill" id="connPill">Ищу устройство…</p>
+    <button type="button" class="pill tg" id="tgPill">Телеграм</button>
+    <p class="fresh" id="freshness"></p>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab on" data-tab="overview" role="tab" title="Обзор" aria-label="Обзор">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></svg>
+      </button>
+      <button type="button" class="tab" data-tab="chart" role="tab" title="График" aria-label="График">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16l5-5 4 3 8-9"/><path d="M3 20h18"/></svg>
+      </button>
+      <button type="button" class="tab" data-tab="log" role="tab" title="Журнал" aria-label="Журнал">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6h12M7 12h12M7 18h12"/><circle cx="4" cy="6" r="1.2"/><circle cx="4" cy="12" r="1.2"/><circle cx="4" cy="18" r="1.2"/></svg>
+      </button>
+      <button type="button" class="tab" data-tab="reports" role="tab" title="Отчёты" aria-label="Отчёты">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v6h6M9 13h8M9 17h6"/></svg>
+      </button>
+      <button type="button" class="tab" data-tab="device" role="tab" title="Устройство" aria-label="Устройство">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="10" rx="2"/><path d="M8 7V5m8 2V5M8 17v2m8-2v2M4 12H2m20 0h-2"/></svg>
+      </button>
+      <button type="button" class="tab" data-tab="telegram" role="tab" title="Телеграм" aria-label="Телеграм">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 4L3 11l6 2 2 6 3-4 5 3z"/><path d="M9 13l12-9"/></svg>
+      </button>
+    </nav>
+    <button type="button" class="icon" id="openSettings" aria-label="Настройки">⚙</button>
+  </header>
+
+  <div class="banner" id="demoBanner" hidden>
+    <span id="demoText"></span>
+    <button type="button" id="leaveDemo">Подключить настоящий</button>
+  </div>
+  <div class="banner alert" id="alarmBanner" hidden></div>
+
+  <main>
+    <section class="view on" id="view-overview" data-view="overview">
+      <div class="gate" id="gate">
+        <p class="eyebrow">Mega USB</p>
+        <h2 id="gateTitle">Ищу бесперебойник</h2>
+        <p id="gateText">Ищу ИБП по USB.</p>
+        <div class="row">
+          <button type="button" class="primary" id="gateRescan">Искать снова</button>
+          <button type="button" class="ghost" id="gateDemo">Посмотреть интерфейс</button>
+        </div>
+      </div>
+
+      <div class="dashboard" id="dashboard" hidden>
+        <div class="flow">
+          <article class="card end hud" id="inCard">
+            <h2>Вход сети</h2>
+            <p class="figure"><span id="inV">—</span><small>В</small></p>
+            <p class="meta">частота <strong id="inHz">—</strong> Гц</p>
+            <p class="meta">к выходу <strong id="deltaV">—</strong></p>
+          </article>
+
+          <div class="schematic">
+            <div class="conduit" id="hopBypass">
+              <span class="node" id="nodeBypass">Сеть</span>
+              <div class="rail" aria-hidden="true">
+                <i></i><i></i><i></i><i></i>
+              </div>
+              <b class="chevron" aria-hidden="true"></b>
+            </div>
+            <div class="bank">
+              <div class="pack" id="battPack"></div>
+              <p class="cell-cap" id="cellCap">—</p>
+            </div>
+            <div class="conduit dim" id="hopInverter">
+              <span class="node" id="nodeInverter">Инвертор</span>
+              <div class="rail" aria-hidden="true">
+                <i></i><i></i><i></i><i></i>
+              </div>
+              <b class="chevron" aria-hidden="true"></b>
+            </div>
+          </div>
+
+          <article class="card end out hud">
+            <h2>Выход к нагрузке</h2>
+            <p class="figure"><span id="outV">—</span><small>В</small></p>
+            <div class="ring" id="loadRing">
+              <div class="hole">
+                <strong id="loadVal">—</strong>
+                <small>%</small>
+              </div>
+            </div>
+            <p class="meta">нагрузка · <strong id="loadVa">—</strong></p>
+          </article>
+        </div>
+
+        <section class="metrics">
+          <article><h3>Батарея</h3><p><span id="mBatt">—</span><small> В</small></p><span class="hint" id="mBattCell">—</span></article>
+          <article><h3>Заряд</h3><p><span id="mSoc">—</span><small> %</small></p><span class="hint" id="mHealth">—</span></article>
+          <article><h3>Температура</h3><p><span id="mTemp">—</span><small> °C</small></p></article>
+          <article><h3>Автономия</h3><p id="mRun">—</p><span class="hint">если сеть пропадёт</span></article>
+          <article><h3>Разряд сейчас</h3><p id="mDis">00:00:00</p></article>
+          <article><h3>Режим</h3><p class="mode-line" id="mMode">—</p><span class="hint" id="mKind">—</span></article>
+        </section>
+
+        <section class="facts" id="facts">
+          <span class="chip" id="factMains">Сеть</span>
+          <span class="chip" id="factPath">Путь</span>
+          <span class="chip" id="factAvr">AVR</span>
+          <span class="chip" id="factBeep">Зуммер</span>
+          <span class="chip" id="factLoose">Батареи</span>
+          <span class="chip" id="factRange">Диапазон входа</span>
+        </section>
+
+        <section class="lamps" id="lamps">
+          <div class="lamp" id="lampLink"><i></i><span>Связь</span></div>
+          <div class="lamp" id="lampMode"><i></i><span>Режим</span></div>
+          <div class="lamp" id="lampMains"><i></i><span>Сеть</span></div>
+          <div class="lamp" id="lampBatt"><i></i><span>Батарея</span></div>
+          <div class="lamp" id="lampLoose"><i></i><span>Пакет</span></div>
+          <div class="lamp" id="lampOff"><i></i><span>Выключение ПК</span></div>
+        </section>
+
+        <section class="spark-card">
+          <header>
+            <h2>Сеть и выход, 15 минут</h2>
+            <p id="sparkNote"></p>
+          </header>
+          <canvas id="spark" data-h="168" height="168"></canvas>
+          <p class="legend"><i class="in"></i> вход <i class="out"></i> выход</p>
+        </section>
+
+        <div class="actions">
+          <button type="button" id="btnSimulate" hidden>Имитация отключения сети</button>
+          <button type="button" id="btnCancelShutdown" hidden>Отменить выключение ПК</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-chart" data-view="chart">
+      <div class="chart-head">
+        <div class="ranges" id="ranges">
+          <button type="button" data-minutes="15">15 мин</button>
+          <button type="button" data-minutes="60" class="on">1 час</button>
+          <button type="button" data-minutes="360">6 часов</button>
+          <button type="button" data-minutes="1440">сутки</button>
+        </div>
+        <div class="series" id="series">
+          <button type="button" class="on" data-series="voltage">Напряжение</button>
+          <button type="button" data-series="load">Нагрузка</button>
+          <button type="button" data-series="battery">Батарея</button>
+          <button type="button" data-series="freq">Частота</button>
+          <button type="button" data-series="temp">Температура</button>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-legend" id="chartLegend"></div>
+        <canvas id="chart" data-h="460" height="460"></canvas>
+        <div class="chart-tip" id="chartTip">Наведите курсор — увидите точные значения</div>
+      </div>
+      <p class="chart-help">Колёсико меняет масштаб по времени. Клик по легенде скрывает линию.</p>
+    </section>
+
+    <section class="view" id="view-log" data-view="log">
+      <div class="log-head">
+        <h2>Журнал</h2>
+        <a class="ghost" href="/api/export.csv">Скачать историю CSV</a>
+      </div>
+      <ol class="events" id="eventList"></ol>
+    </section>
+
+    <section class="view" id="view-reports" data-view="reports">
+      <div class="report-desk">
+        <div class="report-bar">
+          <button type="button" class="on" id="repSummary">Сводка</button>
+          <button type="button" id="repDay">День</button>
+          <button type="button" id="repPrev" aria-label="Предыдущий день">◀</button>
+          <input id="repDate" maxlength="10" spellcheck="false" inputmode="numeric" placeholder="2026-09-27">
+          <button type="button" id="repNext" aria-label="Следующий день">▶</button>
+          <button type="button" id="repRefresh">Обновить</button>
+          <button type="button" id="repFolder">Папка</button>
+          <span id="repPath"></span>
+        </div>
+        <iframe id="repFrame" title="Отчёт UPS"></iframe>
+      </div>
+    </section>
+
+    <section class="view" id="view-device" data-view="device">
+      <div class="split">
+        <article class="card prose">
+          <h2>Подключение</h2>
+          <p id="devPort">—</p>
+          <h2>Паспорт</h2>
+          <p id="devInfo">Запрошу, когда появится связь.</p>
+          <h2>Номиналы</h2>
+          <p id="devRatings">—</p>
+          <h2>Последний ответ</h2>
+          <pre id="devRaw">—</pre>
+        </article>
+        <article class="card prose">
+          <h2>Обмен</h2>
+          <ol class="trace" id="devTrace"></ol>
+          <h2>Порты</h2>
+          <ul id="devPorts"></ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="view" id="view-telegram" data-view="telegram">
+      <div class="tg-page">
+        <header class="tg-head">
+          <div>
+            <p class="eyebrow">Удалённая связь</p>
+            <h2>Телеграм</h2>
+            <p>Сообщения о сети и кнопки питания на телефоне. Чужак без кода чат не привяжет.</p>
+          </div>
+          <div class="tg-hero" id="tgHero" data-state="off">
+            <i></i>
+            <div>
+              <strong id="tgHeroTitle">Бот выключен</strong>
+              <span id="tgHeroText">Сначала вставьте токен.</span>
+            </div>
+          </div>
+        </header>
+
+        <div class="tg-grid">
+          <article class="card tg-card">
+            <p class="step">Шаг 1</p>
+            <h3>Токен бота</h3>
+            <p>В Telegram откройте @BotFather, создайте бота и скопируйте токен.</p>
+            <form id="telegramForm" class="tg-form">
+              <label>
+                Токен
+                <input id="tgToken" name="telegram_token" type="password" autocomplete="off" spellcheck="false" placeholder="123456789:AAH…">
+              </label>
+              <div class="tg-form-row">
+                <button type="submit" class="primary">Сохранить токен</button>
+                <button type="button" class="ghost" id="tgClear">Выключить бота</button>
+              </div>
+              <p class="tg-msg" id="tgFormMsg"></p>
+            </form>
+          </article>
+
+          <article class="card tg-card">
+            <p class="step">Шаг 2</p>
+            <h3>Привязка чата</h3>
+            <p>Напишите боту команду ниже. После этого он начнёт присылать сообщения.</p>
+            <div class="pair">
+              <div>
+                <span>Код</span>
+                <strong id="tgPairCode">————</strong>
+              </div>
+              <button type="button" class="ghost" id="tgCopyPair">Копировать команду</button>
+            </div>
+            <p class="pair-cmd" id="tgPairCmd">/start</p>
+            <button type="button" class="ghost" id="tgNewPair">Выпустить новый код</button>
+          </article>
+
+          <article class="card tg-card">
+            <p class="step">Чаты</p>
+            <h3>Кто получает сообщения</h3>
+            <ul class="tg-chats" id="tgChatList">
+              <li class="empty">Пока никто не привязан.</li>
+            </ul>
+            <button type="button" class="ghost" id="tgUnlink">Отвязать все чаты</button>
+          </article>
+
+          <article class="card tg-card">
+            <p class="step">Сообщения</p>
+            <h3>О чём писать</h3>
+            <label class="switch">
+              <input id="tgNotifyPower" name="telegram_notify_power" type="checkbox">
+              <span></span>
+              <em>Сеть пропала или вернулась</em>
+            </label>
+            <label class="switch">
+              <input id="tgNotifyAlerts" name="telegram_notify_alerts" type="checkbox">
+              <span></span>
+              <em>Батарея, авария, потеря связи с ИБП</em>
+            </label>
+            <div class="digest-block">
+              <label class="switch">
+                <input id="tgDigest" name="telegram_digest" type="checkbox">
+                <span></span>
+                <em>Ежедневный отчёт за сутки</em>
+              </label>
+              <div class="clock-row" id="digestClock">
+                <span>Отправлять в</span>
+                <div class="clock">
+                  <div class="clock-unit">
+                    <button type="button" id="tgHourUp" aria-label="Час позже">▲</button>
+                    <input id="tgDigestHour" inputmode="numeric" maxlength="2" value="21" aria-label="Часы">
+                    <button type="button" id="tgHourDown" aria-label="Час раньше">▼</button>
+                  </div>
+                  <b>:</b>
+                  <div class="clock-unit">
+                    <button type="button" id="tgMinUp" aria-label="Минута позже">▲</button>
+                    <input id="tgDigestMinute" inputmode="numeric" maxlength="2" value="00" aria-label="Минуты">
+                    <button type="button" id="tgMinDown" aria-label="Минута раньше">▼</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span id="footPort">Порт: —</span>
+    <span id="footState">Состояние: поиск</span>
+    <span id="footTime">Время работы: 00:00:00</span>
+  </footer>
+
+  <dialog id="settings">
+    <form id="settingsForm">
+      <header>
+        <h2>Настройки</h2>
+        <button type="button" class="icon" id="closeSettings" aria-label="Закрыть">×</button>
+      </header>
+      <div class="grid">
+        <label>Интервал опроса, с<input name="poll_seconds" type="number" min="1" max="30" step="1"></label>
+        <label>Батарей в серии<input name="battery_count" type="number" min="1" max="8" step="1"></label>
+        <label>Параллельных групп<input name="battery_groups" type="number" min="1" max="6" step="1"></label>
+        <label>Ёмкость одной, А·ч<input name="battery_ah" type="number" min="1" max="300" step="0.1"></label>
+        <label>Мощность ИБП, кВА<input name="ups_kva" type="number" min="0.2" max="20" step="0.1"></label>
+        <label>Полный заряд одной, В<input name="full_voltage" type="number" min="12" max="15" step="0.1"></label>
+        <label>Конец разряда одной, В<input name="eod_voltage" type="number" min="9" max="13" step="0.1"></label>
+        <label>Состояние батареи, %<input name="battery_health" type="number" min="10" max="100" step="1"></label>
+        <label class="wide">COM-порт, если кабель последовательный<input name="serial_port" type="text" placeholder="пусто — только USB"></label>
+        <label class="check"><input name="sound" type="checkbox"> Звук, когда пропадает сеть</label>
+        <label class="check"><input name="autostart" type="checkbox"> Запускать UPS вместе с Windows</label>
+        <label class="check"><input name="journal_enabled" type="checkbox"> Вести журнал и суточные отчёты</label>
+        <label class="wide">Папка журнала<input name="journal_dir" type="text" placeholder="C:\Users\Имя\UPS"></label>
+        <label class="check"><input name="pc_shutdown" type="checkbox"> Выключать этот компьютер от батареи</label>
+        <label>Через, секунд<input name="shutdown_delay" type="number" min="30" max="3600" step="10"></label>
+      </div>
+      <footer>
+        <p id="settingsMsg"></p>
+        <button type="submit" class="primary">Сохранить</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="quitDialog" class="quit-dialog">
+    <img class="quit-mark" src="/icon.svg" alt="" width="48" height="48">
+    <h2>Закрыть UPS?</h2>
+    <p>В трее программа продолжит следить за ИБП и писать в Telegram.</p>
+    <div class="quit-actions">
+      <button type="button" class="primary" id="quitTray">Свернуть в трей</button>
+      <button type="button" class="ghost" id="quitClose">Закрыть программу</button>
+      <button type="button" class="ghost quiet" id="quitStay">Оставить окно</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/app.js?v=29"></script>
+</body>
+</html>

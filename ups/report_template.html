@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>UPS — отчёт</title>
+<style>
+:root {
+  --bg: #070b10; --card: #0d151c; --line: rgba(77,226,255,.16);
+  --text: #e7f6ff; --muted: #7f9aaa; --cyan: #4de2ff; --ok: #3dbe7a;
+  --warn: #e6b15c; --bad: #e15d4c;
+  --sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; color-scheme: dark; }
+body {
+  padding: 18px 16px 36px;
+  color: var(--text);
+  font: 15px/1.45 var(--sans);
+  background:
+    radial-gradient(720px 320px at 8% -10%, rgba(77,226,255,.12), transparent 55%),
+    var(--bg);
+}
+h1, h2, h3, p { margin: 0; }
+button, input {
+  font: inherit; color: inherit;
+  appearance: none; -webkit-appearance: none;
+}
+button {
+  background: #0a1218; color: var(--text);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 8px 14px; cursor: pointer;
+}
+button.on { background: #13222c; border-color: rgba(77,226,255,.45); color: var(--cyan); }
+.wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 14px; }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: flex-end; }
+.eyebrow { color: var(--cyan); letter-spacing: .14em; text-transform: uppercase; font-size: 11px; }
+h1 { font-size: clamp(24px, 4vw, 34px); letter-spacing: .04em; }
+.when { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.card, .kpi, .day {
+  position: relative;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+.card::before, .kpi::before, .day::before {
+  content: ""; position: absolute; top: 6px; left: 6px; width: 10px; height: 10px;
+  border: 1px solid rgba(77,226,255,.4); border-right: 0; border-bottom: 0;
+}
+.kpi span, .card h2 {
+  color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600;
+}
+.kpi b { display: block; font: 650 26px/1.1 var(--mono); margin-top: 8px; color: var(--cyan); }
+.kpi small { color: var(--muted); font: 13px var(--sans); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.chart-box { min-height: 220px; }
+canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
+.list { display: grid; gap: 8px; margin-top: 12px; }
+.row {
+  display: grid; grid-template-columns: 12px 78px 1fr; gap: 10px; align-items: start;
+  padding: 12px 14px; border-radius: 12px; background: #0a1218; border: 1px solid var(--line);
+}
+.row i { width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); margin-top: 6px; }
+.row.bad { border-color: rgba(225,93,76,.4); }
+.row.bad i { background: var(--bad); }
+.row.warn { border-color: rgba(230,177,92,.4); }
+.row.warn i { background: var(--warn); }
+.row.info i { background: #7cf0c0; }
+.row time { color: var(--muted); font: 13px/1.4 var(--mono); }
+.row div { color: var(--text); }
+.empty { color: var(--muted); padding: 20px; text-align: center; }
+.days { display: grid; gap: 10px; margin-top: 12px; }
+.day { display: grid; gap: 8px; }
+.day strong { font-size: 18px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 13px; }
+.stats b { color: var(--text); font-weight: 650; }
+.ev { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #13222c; border: 1px solid var(--line); color: var(--cyan); }
+.hidden { display: none !important; }
+@media (min-width: 840px) {
+  body { padding: 24px 28px 44px; }
+  canvas { height: 280px; }
+  .chart-box { min-height: 280px; }
+  .split { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; align-items: start; }
+}
+@media (max-width: 640px) {
+  button { min-height: 40px; }
+  .row { grid-template-columns: 12px 64px 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow" id="kind">UPS</p>
+      <h1 id="title">Отчёт</h1>
+      <p class="when" id="when"></p>
+    </div>
+    <div class="filters" id="range"></div>
+  </header>
+  <section class="kpis" id="kpis"></section>
+  <section class="card" id="filterCard">
+    <div class="filters" id="metrics"></div>
+    <div class="filters" id="kinds" style="margin-top:10px"></div>
+  </section>
+  <section class="split">
+    <article class="card chart-box" id="chartCard">
+      <h2 id="chartTitle">График</h2>
+      <canvas id="chart" height="280"></canvas>
+    </article>
+    <article class="card">
+      <h2>События</h2>
+      <div class="list" id="events"></div>
+    </article>
+  </section>
+  <section class="card hidden" id="daysCard">
+    <h2>Дни</h2>
+    <div class="days" id="days"></div>
+  </section>
+</div>
+<script>
+const DATA = /*__UPS_DATA__*/null;
+const METRICS = [
+  ["in", "Вход, В"],
+  ["out", "Выход, В"],
+  ["load", "Нагрузка, %"],
+  ["batt", "Батарея, В"],
+  ["temp", "Температура"]
+];
+const RANGES = [
+  ["all", "Сутки"],
+  ["0", "00–06"],
+  ["6", "06–12"],
+  ["12", "12–18"],
+  ["18", "18–24"]
+];
+const KINDS = [
+  ["all", "Все"],
+  ["power", "Сеть"],
+  ["voltage", "Напряжение"],
+  ["battery", "Батарея"],
+  ["pc", "ПК"]
+];
+const state = { metric: "in", range: "all", kind: "all" };
+
+function ready() {
+  if (!DATA) {
+    document.getElementById("title").textContent = "Нет данных";
+    return;
+  }
+  const isDay = DATA.kind === "day";
+  document.getElementById("kind").textContent = isDay ? "Журнал дня" : "Сводка";
+  document.getElementById("title").textContent = isDay ? (DATA.date || "День") : "Важные дни";
+  document.getElementById("when").textContent = DATA.generated ? ("собрано " + DATA.generated) : "";
+  paintKpis();
+  if (isDay) {
+    fillButtons("range", RANGES, "range");
+    fillButtons("metrics", METRICS, "metric");
+    fillButtons("kinds", KINDS, "kind");
+    draw();
+    paintEvents(DATA.events || []);
+  } else {
+    document.getElementById("filterCard").classList.add("hidden");
+    document.getElementById("chartCard").classList.add("hidden");
+    document.getElementById("daysCard").classList.remove("hidden");
+    paintSummaryEvents();
+    paintDays();
+  }
+}
+
+function paintKpis() {
+  const stats = DATA.stats || {};
+  const items = DATA.kind === "day" ? [
+    ["Вход ср.", num(stats.inAvg), "В"],
+    ["Мин / макс", join(stats.inMin, stats.inMax), "В"],
+    ["Нагрузка", num(stats.loadAvg), "%"],
+    ["Отключения", stats.outages || 0, "раз"],
+    ["На батарее", stats.onBatteryMinutes || 0, "мин"],
+    ["События", stats.events || 0, ""]
+  ] : [
+    ["Дней", stats.days || 0, ""],
+    ["Вход ср.", num(stats.inAvg), "В"],
+    ["Нагрузка ср.", num(stats.loadAvg), "%"],
+    ["Отключения", stats.outages || 0, "раз"],
+    ["На батарее", stats.onBatteryMinutes || 0, "мин"]
+  ];
+  document.getElementById("kpis").innerHTML = items.map(([label, value, unit]) =>
+    `<article class="kpi"><span>${label}</span><b>${value}${unit ? `<small> ${unit}</small>` : ""}</b></article>`
+  ).join("");
+}
+
+function fillButtons(id, items, key) {
+  const box = document.getElementById(id);
+  box.innerHTML = items.map(([value, label]) =>
+    `<button type="button" data-key="${key}" data-value="${value}">${label}</button>`
+  ).join("");
+  box.querySelectorAll("button").forEach((button) => {
+    button.classList.toggle("on", state[key] === button.dataset.value);
+    button.onclick = () => {
+      state[key] = button.dataset.value;
+      box.querySelectorAll("button").forEach((node) => node.classList.toggle("on", node === button));
+      draw();
+      paintEvents(DATA.events || []);
+    };
+  });
+}
+
+function filteredPoints() {
+  const [from, to] = rangeMinutes();
+  return (DATA.points || []).filter((point) => point.m >= from && point.m < to);
+}
+
+function rangeMinutes() {
+  if (state.range === "all") return [0, 1440];
+  const start = Number(state.range) * 60;
+  return [start, start + 360];
+}
+
+function draw() {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 320;
+  const height = canvas.clientHeight || 220;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const points = filteredPoints();
+  const key = state.metric;
+  const values = points.map((point) => point[key]).filter((value) => value != null);
+  document.getElementById("chartTitle").textContent = (METRICS.find((item) => item[0] === key) || [])[1] || "График";
+  if (!values.length) {
+    ctx.fillStyle = "#7f9aaa";
+    ctx.fillText("Нет точек за этот промежуток", 16, height / 2);
+    return;
+  }
+  const min = Math.min.apply(null, values);
+  const max = Math.max.apply(null, values);
+  const pad = (max - min) * 0.12 || 1;
+  const lo = min - pad;
+  const hi = max + pad;
+  const [from, to] = rangeMinutes();
+  const left = 44, right = 12, top = 12, bottom = 28;
+  const innerW = width - left - right;
+  const innerH = height - top - bottom;
+  ctx.strokeStyle = "rgba(77,226,255,.12)";
+  ctx.fillStyle = "#7f9aaa";
+  ctx.font = "11px Segoe UI, sans-serif";
+  for (let i = 0; i < 4; i++) {
+    const y = top + innerH * i / 3;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width - right, y); ctx.stroke();
+    const label = (hi - (hi - lo) * i / 3).toFixed(1);
+    ctx.fillText(label, 4, y + 4);
+  }
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const value = point[key];
+    if (value == null) return;
+    const x = left + ((point.m - from) / Math.max(1, to - from)) * innerW;
+    const y = top + (1 - (value - lo) / (hi - lo)) * innerH;
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#4de2ff";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = "#7f9aaa";
+  ctx.fillText(clock(from), left, height - 8);
+  ctx.fillText(clock(to >= 1440 ? 1439 : to), width - 48, height - 8);
+}
+
+function paintEvents(items) {
+  const [from, to] = rangeMinutes();
+  const filtered = items.filter((item) => {
+    const minutes = stampMinutes(item.t);
+    if (minutes < from || minutes >= to) return false;
+    return kindMatch(item.code);
+  });
+  const box = document.getElementById("events");
+  if (!filtered.length) {
+    box.innerHTML = '<p class="empty">Событий нет</p>';
+    return;
+  }
+  box.innerHTML = filtered.slice(-80).reverse().map((item) =>
+    `<div class="row ${item.level || ""}"><i></i><time>${hhmm(item.t)}</time><div>${esc(item.message || item.code)}</div></div>`
+  ).join("");
+}
+
+function paintSummaryEvents() {
+  const items = [];
+  (DATA.days || []).forEach((day) => {
+    (day.events || []).forEach((item) => items.push({ ...item, date: day.date }));
+  });
+  items.sort((a, b) => (b.t || 0) - (a.t || 0));
+  const box = document.getElementById("events");
+  if (!items.length) {
+    box.innerHTML = '<p class="empty">Важных событий пока нет</p>';
+    return;
+  }
+  box.innerHTML = items.slice(0, 40).map((item) =>
+    `<div class="row ${item.level || ""}"><i></i><time>${(item.date || "").slice(5)}<br>${hhmm(item.t)}</time><div>${esc(item.message || item.code)}</div></div>`
+  ).join("");
+}
+
+function paintDays() {
+  const box = document.getElementById("days");
+  const days = (DATA.days || []).slice().reverse();
+  if (!days.length) {
+    box.innerHTML = '<p class="empty">Сводка ещё пустая — журнал только начал писаться.</p>';
+    return;
+  }
+  box.innerHTML = days.map((day) => {
+    const s = day.stats || {};
+    const chips = (day.events || []).slice(-4).map((item) => `<span class="chip">${esc(short(item.message || item.code))}</span>`).join("");
+    return `<article class="day">
+      <strong>${day.date}</strong>
+      <p class="stats">
+        <span>вход <b>${num(s.inAvg)}</b> В</span>
+        <span>${num(s.inMin)}–${num(s.inMax)}</span>
+        <span>нагрузка <b>${num(s.loadAvg)}</b>%</span>
+        <span>откл. <b>${s.outages || 0}</b></span>
+      </p>
+      <div class="ev">${chips || '<span class="chip">без тревог</span>'}</div>
+    </article>`;
+  }).join("");
+}
+
+function kindMatch(code) {
+  const value = state.kind;
+  if (value === "all") return true;
+  if (value === "power") return String(code).indexOf("on_battery") === 0 || code === "link_lost";
+  if (value === "voltage") return String(code).indexOf("voltage_") === 0;
+  if (value === "battery") return String(code).indexOf("battery_") === 0;
+  if (value === "pc") return String(code).indexOf("pc_") === 0 || code === "app_restart";
+  return true;
+}
+
+function stampMinutes(ts) {
+  const date = new Date((ts || 0) * 1000);
+  return date.getHours() * 60 + date.getMinutes();
+}
+function hhmm(ts) {
+  const date = new Date((ts || 0) * 1000);
+  return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
+}
+function clock(minutes) {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+}
+function num(value) { return value == null || value === "" ? "—" : Number(value).toFixed(1); }
+function join(a, b) { return (a == null && b == null) ? "—" : num(a) + " / " + num(b); }
+function short(text) { return String(text || "").slice(0, 32); }
+function esc(text) {
+  return String(text || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+window.addEventListener("resize", () => { if (DATA && DATA.kind === "day") draw(); });
+ready();
+</script>
+</body>
+</html>
