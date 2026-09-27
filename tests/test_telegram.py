@@ -356,9 +356,79 @@ class ReportTests(unittest.TestCase):
         tray._icon = type("Icon", (), {"notify": lambda self, message, title: notes.append((title, message))})()
         tray.notify("ИБП на связи", "USB снова на месте")
         self.assertEqual(notes, [])
+        self.assertEqual(tray.unread, 0)
         tray.hidden = True
         tray.notify("ИБП на связи", "USB снова на месте")
         self.assertEqual(notes, [("ИБП на связи", "USB снова на месте")])
+        self.assertEqual(tray.unread, 1)
+        self.assertIn("новых", tray._icon_title())
+        badged = tray._icon_image()
+        tray.unread = 0
+        clean = tray._icon_image()
+        self.assertNotEqual(list(badged.getdata()), list(clean.getdata()))
+
+    def test_tray_double_click_opens_program(self):
+        calls = []
+        tray = Tray(window=type("Win", (), {
+            "show": lambda self: calls.append("show"),
+            "restore": lambda self: calls.append("restore"),
+            "evaluate_js": lambda self, code: calls.append(code),
+        })())
+        tray._on_icon_click()
+        tray._on_icon_click()
+        self.assertIn("restore", calls)
+        self.assertIn("show", calls)
+        self.assertTrue(any("closeNoticeInbox" in str(item) for item in calls))
+        self.assertIsNone(tray._click_timer)
+        calls.clear()
+        tray._on_icon_dblclick()
+        self.assertIn("restore", calls)
+        self.assertIn("show", calls)
+
+    def test_tray_single_click_opens_inbox_near_tray(self):
+        from unittest.mock import patch
+        calls = []
+        tray = Tray(window=type("Win", (), {
+            "show": lambda self: calls.append("show"),
+            "restore": lambda self: calls.append("restore"),
+            "evaluate_js": lambda self, code: calls.append(code),
+        })())
+        tray.unread = 3
+        tray.remember_notice("Сеть пропала", "Питание от батареи", "on_battery", "warn", 1710000000)
+        with patch("ups.win_toast.toggle_inbox", lambda items, **kwargs: calls.append(("inbox", len(items)))):
+            tray.open_notices()
+        self.assertNotIn("show", calls)
+        self.assertNotIn("restore", calls)
+        self.assertEqual(tray.unread, 0)
+        self.assertEqual(calls[0], ("inbox", 1))
+
+    def test_tray_binds_double_click_on_notify_handler(self):
+        calls = []
+        tray = Tray(window=type("Win", (), {
+            "show": lambda self: calls.append("show"),
+            "restore": lambda self: calls.append("restore"),
+            "evaluate_js": lambda self, code: calls.append(code),
+        })())
+        icon = type("Icon", (), {
+            "_on_notify": lambda self, w, l: calls.append("orig"),
+            "_message_handlers": {0x040B: None},
+        })()
+        tray._icon = icon
+        tray._bind_icon_clicks()
+        icon._message_handlers[0x040B](0, 0x0203)
+        self.assertIn("show", calls)
+        self.assertNotIn("orig", calls)
+
+    def test_windows_toast_xml_uses_card_image(self):
+        from ups.win_toast import _fit, inbox_size, notice_clock, notice_tone, show_card
+        self.assertEqual(_fit((420, 210)), (420, 210))
+        self.assertEqual(_fit((1260, 630)), (440, 220))
+        self.assertEqual(inbox_size(0)[0], 380)
+        self.assertLess(inbox_size(2)[1], inbox_size(8)[1])
+        self.assertEqual(notice_tone({"code": "fault"}), "bad")
+        self.assertEqual(notice_tone({"code": "on_battery_clear"}), "ok")
+        self.assertEqual(notice_clock(0), "--:--:--")
+        self.assertFalse(show_card(b""))
 
     def test_old_confirm_button_is_ignored(self):
         now = time.time()

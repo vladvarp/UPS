@@ -258,10 +258,10 @@ _MAINS_PRESENT = 80.0
 def voltage_limits(settings: dict | None = None) -> dict:
     src = settings or {}
     return {
-        "low": _limit_num(src.get("volt_low"), VOLTAGE_LOW),
-        "high": _limit_num(src.get("volt_high"), VOLTAGE_HIGH),
-        "crit_low": _limit_num(src.get("volt_crit_low"), VOLTAGE_CRIT_LOW),
-        "crit_high": _limit_num(src.get("volt_crit_high"), VOLTAGE_CRIT_HIGH),
+        "low": _limit_num(src.get("low", src.get("volt_low")), VOLTAGE_LOW),
+        "high": _limit_num(src.get("high", src.get("volt_high")), VOLTAGE_HIGH),
+        "crit_low": _limit_num(src.get("crit_low", src.get("volt_crit_low")), VOLTAGE_CRIT_LOW),
+        "crit_high": _limit_num(src.get("crit_high", src.get("volt_crit_high")), VOLTAGE_CRIT_HIGH),
     }
 
 

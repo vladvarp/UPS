@@ -47,7 +47,7 @@ from ups.transport import (
     _likely_serial,
 )
 from ups import reports
-from ups.notify_art import card_title
+from ups.notify_art import card_title, notify_image
 from ups.telegram import (
     TOKEN_RE,
     TelegramBridge,
@@ -1335,8 +1335,13 @@ class Monitor:
         if not windows_notify_allowed(self.get_settings_raw(), code):
             return
         title = card_title(code, item.get("message"))
+        text = str(item.get("message") or title)
         try:
-            tray.notify(title, str(item.get("message") or title))
+            png = notify_image(code, title, text)
+        except Exception:
+            png = None
+        try:
+            tray.notify(title, text, image=png, code=code, level=str(item.get("level") or ""))
         except Exception:
             pass
 

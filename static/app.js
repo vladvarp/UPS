@@ -235,6 +235,8 @@ window.showQuitDialog = showQuitDialog;
 window.prepareForScreenshot = prepareForScreenshot;
 window.restoreAfterScreenshot = restoreAfterScreenshot;
 window.reloadLiveHistory = reloadLiveHistory;
+window.openNoticeInbox = openNoticeInbox;
+window.closeNoticeInbox = closeNoticeInbox;
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") reloadLiveHistory();
 });
@@ -2428,15 +2430,26 @@ function renderInbox() {
 
 function toggleInbox() {
   const box = $("noticeInbox");
+  if (!box) return;
+  if (box.hidden) openNoticeInbox();
+  else closeNoticeInbox();
+}
+
+function openNoticeInbox() {
+  const box = $("noticeInbox");
   const btn = $("noticeBtn");
   if (!box) return;
-  const open = box.hidden;
-  box.hidden = !open;
-  if (btn) btn.classList.toggle("on", open);
-  if (open) {
-    noticeUnread = 0;
-    renderInbox();
-  }
+  box.hidden = false;
+  if (btn) btn.classList.add("on");
+  noticeUnread = 0;
+  renderInbox();
+}
+
+function closeNoticeInbox() {
+  const box = $("noticeInbox");
+  const btn = $("noticeBtn");
+  if (box) box.hidden = true;
+  if (btn) btn.classList.remove("on");
 }
 
 function clearInbox() {

@@ -71,6 +71,7 @@ def _run_window(monitor: Monitor, port: int) -> None:
         create["y"] = geom["y"]
     window = webview.create_window(APP_NAME, url, **create)
     tray = Tray(window)
+    tray.set_events_source(lambda: monitor.events(40).get("events") or [])
     monitor.set_tray(tray)
     monitor.set_desktop_quit(tray.apply)
     monitor.set_app_restart(_restart_program)

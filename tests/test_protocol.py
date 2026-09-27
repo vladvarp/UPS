@@ -14,6 +14,7 @@ from ups.protocol import (
     parse_ratings,
     plausible,
     runtime_minutes,
+    voltage_limits,
     voltage_note,
     voltage_state,
 )
@@ -137,6 +138,13 @@ class VoltageAlertTests(unittest.TestCase):
         self.assertEqual(voltage_note("low", limits), "Вход ниже 210 В")
         self.assertTrue(mains_voltage_active("voltage_high", 231, False, False, limits))
         self.assertFalse(mains_voltage_active("voltage_high", 229, False, False, limits))
+
+    def test_resolved_limits_keep_custom_low(self):
+        limits = voltage_limits({"volt_low": 195, "volt_high": 240, "volt_crit_low": 180, "volt_crit_high": 250})
+        self.assertEqual(limits["low"], 195)
+        self.assertEqual(voltage_state(199, False, limits), "ok")
+        self.assertFalse(mains_voltage_active("voltage_low", 199, False, False, limits))
+        self.assertTrue(mains_voltage_active("voltage_low", 194, False, False, limits))
 
     def test_voltage_order_is_checked(self):
         clean, error = _validate({"volt_low": 240, "volt_high": 200, "volt_crit_low": 180, "volt_crit_high": 250})
