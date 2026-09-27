@@ -33,6 +33,7 @@ _TITLES = {
     "fault": "Неисправность",
     "fault_clear": "Авария снята",
     "link_lost": "Нет связи с ИБП",
+    "link": "ИБП на связи",
     "battery_loose": "Батареи отключены",
     "battery_loose_clear": "Пакет в норме",
     "battery_swap": "Пакет сменился",
@@ -96,12 +97,14 @@ def _card_body(text: str | None, title: str) -> str:
 def _tone(code: str) -> str:
     if "crit" in code or code in {"fault", "pc_off", "battery_loose"}:
         return "bad"
-    if code.endswith("_clear") or code == "startup":
+    if code.endswith("_clear") or code in {"startup", "link"}:
         return "ok"
     return "warn"
 
 
 def _kicker(code: str, tone: str) -> str:
+    if code == "link":
+        return "Связь"
     if code in {"startup", "shutdown", "app_restart"}:
         return "Событие"
     if code in {"report", "day_report", "summary", "status", "events", "screenshot", "help"}:
@@ -267,6 +270,12 @@ def _pc_glyph(draw, code: str, x: int, y: int, size: int, color) -> None:
         arc(60, 52, 22, 200, 340)
         arc(60, 46, 34, 205, 335)
         line(28, 100, 92, 20)
+        return
+    if code == "link":
+        line(60, 86, 60, 40)
+        circle(60, 94, 6, fill=True)
+        arc(60, 52, 22, 200, 340)
+        arc(60, 46, 34, 205, 335)
         return
     if code == "pc_sleep":
         circle(52, 64, 28, fill=True)

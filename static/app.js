@@ -41,6 +41,7 @@ const ALERT_TITLES = {
   fault: "Неисправность",
   fault_clear: "Авария снята",
   link_lost: "Нет связи с ИБП",
+  link: "ИБП на связи",
   battery_loose: "Батареи отключены",
   battery_loose_clear: "Пакет в норме",
   battery_swap: "Пакет сменился",
@@ -111,6 +112,7 @@ const TG_EVENTS = [
     { code: "fault", title: "Неисправность" },
     { code: "fault_clear", title: "Авария снята" },
     { code: "link_lost", title: "Нет связи с ИБП" },
+    { code: "link", title: "ИБП на связи" },
   ]},
   { group: "ПК", items: [
     { code: "pc_shutdown", title: "Отсчёт выключения" },
@@ -123,6 +125,26 @@ const TG_EVENTS = [
     { code: "startup", title: "UPS запущен" },
     { code: "shutdown", title: "UPS закрыт" },
     { code: "app_restart", title: "Перезапуск UPS" },
+  ]},
+];
+
+const TG_ACTIONS = [
+  { group: "ПК", items: [
+    { code: "pc_off", title: "Выключить ПК" },
+    { code: "pc_reboot", title: "Перезагрузка" },
+    { code: "pc_sleep", title: "Сон" },
+    { code: "pc_hibernate", title: "Гибернация" },
+    { code: "cancel_shutdown", title: "Отмена выключения" },
+  ]},
+  { group: "ПО", items: [
+    { code: "screenshot", title: "Скриншот" },
+    { code: "app_restart", title: "Перезапуск программы" },
+  ]},
+  { group: "Отчёты", items: [
+    { code: "status", title: "Состояние" },
+    { code: "events", title: "Журнал" },
+    { code: "day_report", title: "Отчёт дня" },
+    { code: "summary", title: "Сводка" },
   ]},
 ];
 
@@ -159,6 +181,13 @@ $("btnSimulate").addEventListener("click", () => command("simulate"));
 $("btnCancelShutdown").addEventListener("click", cancelShutdown);
 $("tgNewPair").addEventListener("click", () => telegramAction("telegram_new_pair"));
 $("tgUnlink").addEventListener("click", () => telegramAction("telegram_unlink"));
+$("tgChatList").addEventListener("click", onChatListClick);
+$("closeChat").addEventListener("click", () => $("chatDialog").close());
+$("chatGuest").addEventListener("change", onChatRoleChange);
+$("chatAdmin").addEventListener("change", onChatRoleChange);
+$("chatEventList").addEventListener("change", saveChatRules);
+$("chatActionList").addEventListener("change", saveChatRules);
+$("windowsNotify").addEventListener("change", saveTelegramFlags);
 $("repSummary").addEventListener("click", () => setReportKind("summary"));
 $("repDay").addEventListener("click", () => setReportKind("day"));
 $("repPrev").addEventListener("click", () => shiftReportDay(-1));
@@ -210,7 +239,11 @@ $("tgEventList").addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement)) return;
   const row = input.closest(".tg-event");
-  if (row) row.classList.toggle("is-off", !row.querySelector('[data-kind="on"]').checked);
+  if (row) {
+    const botOn = row.querySelector('[data-kind="on"]');
+    const trayOn = row.querySelector('[data-kind="tray"]');
+    row.classList.toggle("is-off", !(botOn && botOn.checked) && !(trayOn && trayOn.checked));
+  }
   input.blur();
   saveTelegramFlags();
 });
@@ -247,6 +280,7 @@ $("series").addEventListener("click", (event) => {
 $("chart").addEventListener("mousemove", hoverChart);
 $("chart").addEventListener("mouseleave", () => {
   chartHoverX = null;
+  hidePlotTip();
   $("chartTip").textContent = "Наведите курсор — увидите точные значения";
   drawChart(false);
 });
@@ -270,6 +304,7 @@ $("chartLegend").addEventListener("click", (event) => {
 $("spark").addEventListener("mousemove", hoverSpark);
 $("spark").addEventListener("mouseleave", () => {
   sparkHoverX = null;
+  hidePlotTip();
   refreshSparkNote();
   drawSpark();
 });
@@ -343,7 +378,8 @@ async function pull() {
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("on", tab.dataset.tab === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("on", view.dataset.view === name));
-  document.querySelector("main").classList.toggle("fill", name === "reports");
+  document.querySelector("main").classList.toggle("fill", name === "reports" || name === "telegram");
+  if (name !== "overview" && name !== "chart") hidePlotTip();
   if (name === "chart") drawChart();
   if (name === "log") loadEvents();
   if (name === "telegram") fillTelegramFields();
@@ -530,15 +566,21 @@ function defaultEventSound(code) {
   return !String(code).endsWith("_clear") && code !== "startup";
 }
 
+function defaultEventTray(code) {
+  return !String(code).endsWith("_clear") && code !== "startup" && code !== "shutdown";
+}
+
 function telegramEventsPayload() {
   const events = {};
   TG_EVENTS.forEach((group) => {
     group.items.forEach((item) => {
       const send = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="on"]`);
       const sound = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="sound"]`);
+      const tray = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="tray"]`);
       events[item.code] = {
         on: send ? send.checked : true,
         sound: sound ? sound.checked : defaultEventSound(item.code),
+        tray: tray ? tray.checked : defaultEventTray(item.code),
       };
     });
   });
@@ -564,6 +606,10 @@ function renderTelegramEvents(settings) {
               <input type="checkbox" data-tg-ev="${escapeAttr(item.code)}" data-kind="sound">
               <span></span>
             </label>
+            <label class="switch tray" title="Уведомление Windows в трее">
+              <input type="checkbox" data-tg-ev="${escapeAttr(item.code)}" data-kind="tray">
+              <span></span>
+            </label>
           </div>`).join("")}
       </section>`).join("");
     box.dataset.ready = "1";
@@ -573,12 +619,15 @@ function renderTelegramEvents(settings) {
       const pref = stored[item.code];
       const on = pref ? pref.on !== false : true;
       const sound = pref ? Boolean(pref.sound) : defaultEventSound(item.code);
+      const tray = pref && "tray" in pref ? Boolean(pref.tray) : defaultEventTray(item.code);
       const sendBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="on"]`);
       const soundBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="sound"]`);
+      const trayBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="tray"]`);
       if (sendBox) sendBox.checked = on;
       if (soundBox) soundBox.checked = sound;
+      if (trayBox) trayBox.checked = tray;
       const row = sendBox && sendBox.closest(".tg-event");
-      if (row) row.classList.toggle("is-off", !on);
+      if (row) row.classList.toggle("is-off", !on && !tray);
     });
   });
 }
@@ -592,6 +641,7 @@ async function saveTelegramFlags() {
       telegram_digest: $("tgDigest").checked,
       telegram_digest_time: digestClockValue(),
       telegram_events: telegramEventsPayload(),
+      windows_notify: $("windowsNotify").checked,
     }),
   });
 }
@@ -697,10 +747,10 @@ async function telegramAction(action) {
 }
 
 async function copyPairCommand() {
-  const text = $("tgPairCmd").textContent || "";
+  const text = ($("tgPairCode").textContent || "").replace(/[^\d]/g, "");
   try {
     await navigator.clipboard.writeText(text);
-    toast("Команда скопирована");
+    toast("Код скопирован");
   } catch (error) {
     toast(text);
   }
@@ -782,7 +832,7 @@ function paintTelegram(snapshot) {
   } else if (tg.ok) {
     mode = "wait";
     title = tg.username ? `@${tg.username}` : "Бот готов";
-    text = "Напишите боту команду с кодом привязки.";
+    text = "Напишите боту код привязки, только цифры.";
     pill.classList.add("wait");
     pillTextValue = "Телеграм · нет чата";
   } else {
@@ -798,19 +848,274 @@ function paintTelegram(snapshot) {
   $("tgHeroText").textContent = text;
   const code = tg.pair_code || settings.telegram_pair || "";
   $("tgPairCode").textContent = code || "————";
-  $("tgPairCmd").textContent = code ? `/start ${code}` : "/start";
   const list = (tg.chats && tg.chats.length) ? tg.chats : settings.telegram_chats || [];
   $("tgChatList").innerHTML = list.length
-    ? list.map((item) => `<li>${escapeHtml(item.name || item.id)}</li>`).join("")
+    ? list.map((item) => `
+        <li class="tg-chat" data-id="${escapeAttr(item.id)}">
+          <div>
+            <strong>${escapeHtml(item.name || item.id)}</strong>
+            <span class="tg-role">${item.guest ? "гость" : item.admin ? "админ" : "полный доступ"}</span>
+          </div>
+          <div class="tg-chat-actions">
+            <button type="button" class="ghost" data-chat-act="rules">Правила</button>
+            <button type="button" class="ghost" data-chat-act="unlink">Отвязать</button>
+          </div>
+        </li>`).join("")
     : `<li class="empty">Пока никто не привязан.</li>`;
+}
+
+function syncWindowsMaster() {
+  const box = $("tgEventList") && $("tgEventList").closest(".tg-events");
+  if (box) box.classList.toggle("is-tray-off", !$("windowsNotify").checked);
+}
+
+function currentChatList() {
+  const tg = (state && state.telegram) || {};
+  const settings = (state && state.settings) || {};
+  return (tg.chats && tg.chats.length) ? tg.chats : settings.telegram_chats || [];
+}
+
+function findChat(id) {
+  return currentChatList().find((item) => String(item.id) === String(id));
+}
+
+function defaultGuestActions() {
+  return {
+    pc_off: false, pc_reboot: false, pc_sleep: false, pc_hibernate: false,
+    cancel_shutdown: true, screenshot: true, app_restart: false,
+    status: true, events: true, day_report: true, summary: true,
+  };
+}
+
+function defaultGuestEvents() {
+  const events = {};
+  TG_EVENTS.forEach((group) => {
+    group.items.forEach((item) => {
+      const on = item.code === "on_battery" || item.code === "on_battery_clear";
+      events[item.code] = { on, sound: item.code === "on_battery" };
+    });
+  });
+  return events;
+}
+
+function guestEventOn(events, code) {
+  const item = events && events[code];
+  if (item && typeof item === "object") return Boolean(item.on);
+  return Boolean(item);
+}
+
+function guestEventSound(events, code) {
+  const item = events && events[code];
+  if (item && typeof item === "object") return Boolean(item.on && item.sound);
+  return Boolean(item) && defaultEventSound(code);
+}
+
+function onChatListClick(event) {
+  const button = event.target.closest("[data-chat-act]");
+  const row = event.target.closest(".tg-chat");
+  if (!button || !row) return;
+  const id = row.dataset.id;
+  if (button.dataset.chatAct === "unlink") {
+    updateTelegramChat({ id, action: "unlink" });
+    return;
+  }
+  openChatDialog(id);
+}
+
+function openChatDialog(id) {
+  const chat = findChat(id);
+  if (!chat) return;
+  const dialog = $("chatDialog");
+  dialog.dataset.id = String(chat.id);
+  $("chatDialogTitle").textContent = chat.name || `Чат ${chat.id}`;
+  $("chatGuest").checked = Boolean(chat.guest);
+  $("chatAdmin").checked = Boolean(chat.admin) && !chat.guest;
+  renderChatRules(chat);
+  $("chatRules").hidden = !chat.guest;
+  dialog.showModal();
+}
+
+function defaultAdminEvents() {
+  const events = {};
+  TG_EVENTS.forEach((group) => {
+    group.items.forEach((item) => {
+      events[item.code] = { on: true, sound: defaultEventSound(item.code) };
+    });
+  });
+  return events;
+}
+
+function defaultAdminActions() {
+  const actions = {};
+  TG_ACTIONS.forEach((group) => {
+    group.items.forEach((item) => {
+      actions[item.code] = true;
+    });
+  });
+  return actions;
+}
+
+function rulesForChat(chat) {
+  if (chat && chat.guest) {
+    return { events: chat.events || defaultGuestEvents(), actions: chat.actions || defaultGuestActions() };
+  }
+  return { events: (chat && chat.events) || defaultAdminEvents(), actions: (chat && chat.actions) || defaultAdminActions() };
+}
+
+function onChatRoleChange(event) {
+  const guest = $("chatGuest");
+  const admin = $("chatAdmin");
+  if (event && event.target === guest && guest.checked) admin.checked = false;
+  if (event && event.target === admin && admin.checked) guest.checked = false;
+  if (guest.checked) renderChatRules({ guest: true, events: defaultGuestEvents(), actions: defaultGuestActions() });
+  $("chatRules").hidden = !guest.checked;
+  saveChatRules();
+}
+
+function renderChatRules(chat) {
+  const { events, actions } = rulesForChat(chat);
+  $("chatEventList").innerHTML = TG_EVENTS.map((group) => `
+    <section class="chat-group" data-ev-group="${escapeAttr(group.group)}">
+      <div class="chat-group-head">
+        <h4>${escapeHtml(group.group)}</h4>
+        <label class="switch" title="Вся группа">
+          <input type="checkbox" data-group-on="${escapeAttr(group.group)}" ${group.items.every((item) => guestEventOn(events, item.code)) ? "checked" : ""}>
+          <span></span>
+        </label>
+        <label class="switch sound" title="Звук группы">
+          <input type="checkbox" data-group-sound="${escapeAttr(group.group)}" ${group.items.every((item) => guestEventSound(events, item.code)) ? "checked" : ""}>
+          <span></span>
+        </label>
+      </div>
+      ${group.items.map((item) => `
+        <div class="tg-event">
+          <em>${escapeHtml(item.title)}</em>
+          <label class="switch" title="Присылать">
+            <input type="checkbox" data-chat-ev="${escapeAttr(item.code)}" data-kind="on" ${guestEventOn(events, item.code) ? "checked" : ""}>
+            <span></span>
+          </label>
+          <label class="switch sound" title="Со звуком">
+            <input type="checkbox" data-chat-ev="${escapeAttr(item.code)}" data-kind="sound" ${guestEventSound(events, item.code) ? "checked" : ""}>
+            <span></span>
+          </label>
+        </div>`).join("")}
+    </section>`).join("");
+  $("chatActionList").innerHTML = TG_ACTIONS.map((group) => `
+    <section class="chat-group" data-act-group="${escapeAttr(group.group)}">
+      <div class="chat-group-head one">
+        <h4>${escapeHtml(group.group)}</h4>
+        <label class="switch tray" title="Вся группа">
+          <input type="checkbox" data-act-group-on="${escapeAttr(group.group)}" ${group.items.every((item) => actions[item.code]) ? "checked" : ""}>
+          <span></span>
+        </label>
+      </div>
+      ${group.items.map((item) => `
+        <div class="tg-event">
+          <em>${escapeHtml(item.title)}</em>
+          <label class="switch tray" title="Кнопка в боте">
+            <input type="checkbox" data-chat-btn="${escapeAttr(item.code)}" ${actions[item.code] ? "checked" : ""}>
+            <span></span>
+          </label>
+        </div>`).join("")}
+    </section>`).join("");
+}
+
+function chatRulesPayload() {
+  const events = {};
+  const actions = {};
+  TG_EVENTS.forEach((group) => {
+    group.items.forEach((item) => {
+      const send = document.querySelector(`[data-chat-ev="${item.code}"][data-kind="on"]`);
+      const sound = document.querySelector(`[data-chat-ev="${item.code}"][data-kind="sound"]`);
+      const on = send ? send.checked : false;
+      events[item.code] = { on, sound: on && sound ? sound.checked : false };
+    });
+  });
+  TG_ACTIONS.forEach((group) => {
+    group.items.forEach((item) => {
+      const box = document.querySelector(`[data-chat-btn="${item.code}"]`);
+      actions[item.code] = box ? box.checked : false;
+    });
+  });
+  return { events, actions };
+}
+
+function applyGroupToggle(input) {
+  const group = input.dataset.groupOn || input.dataset.groupSound || input.dataset.actGroupOn;
+  if (input.dataset.groupOn) {
+    document.querySelectorAll(`[data-ev-group="${group}"] [data-chat-ev][data-kind="on"]`).forEach((box) => {
+      box.checked = input.checked;
+    });
+    if (!input.checked) {
+      document.querySelectorAll(`[data-ev-group="${group}"] [data-chat-ev][data-kind="sound"]`).forEach((box) => {
+        box.checked = false;
+      });
+    }
+  } else if (input.dataset.groupSound) {
+    document.querySelectorAll(`[data-ev-group="${group}"] [data-chat-ev][data-kind="sound"]`).forEach((box) => {
+      box.checked = input.checked;
+    });
+    if (input.checked) {
+      document.querySelectorAll(`[data-ev-group="${group}"] [data-chat-ev][data-kind="on"]`).forEach((box) => {
+        box.checked = true;
+      });
+    }
+  } else if (input.dataset.actGroupOn) {
+    document.querySelectorAll(`[data-act-group="${group}"] [data-chat-btn]`).forEach((box) => {
+      box.checked = input.checked;
+    });
+  }
+}
+
+async function saveChatRules(event) {
+  const dialog = $("chatDialog");
+  const id = dialog && dialog.dataset.id;
+  if (!id) return;
+  if (event && event.target && (event.target.dataset.groupOn || event.target.dataset.groupSound || event.target.dataset.actGroupOn)) {
+    applyGroupToggle(event.target);
+  }
+  const guest = $("chatGuest").checked;
+  const admin = $("chatAdmin").checked && !guest;
+  $("chatRules").hidden = !guest;
+  const payload = {
+    id,
+    action: "update",
+    guest,
+    admin,
+  };
+  if (guest) Object.assign(payload, chatRulesPayload());
+  await updateTelegramChat(payload, true);
+}
+
+async function updateTelegramChat(payload, quiet) {
+  const response = await fetch("/api/telegram/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!quiet) toast(data.message || "Готово");
+  if (data.settings && state) {
+    state.settings = data.settings;
+    if (state.telegram) state.telegram.chats = data.settings.telegram_chats || [];
+  }
+  paintTelegram(state || {});
+  if ($("chatDialog").open && data.chat) {
+    $("chatGuest").checked = Boolean(data.chat.guest);
+    $("chatAdmin").checked = Boolean(data.chat.admin) && !data.chat.guest;
+    if (data.chat.guest) renderChatRules(data.chat);
+    $("chatRules").hidden = !data.chat.guest;
+  }
 }
 
 function fillTelegramFields() {
   const settings = (state && state.settings) || {};
   $("tgDigest").checked = Boolean(settings.telegram_digest);
+  $("windowsNotify").checked = settings.windows_notify !== false;
   setDigestClock(settings.telegram_digest_time || "21:00");
   syncDigestTime();
   renderTelegramEvents(settings);
+  syncWindowsMaster();
   $("tgToken").placeholder = settings.telegram_token_set
     ? "токен уже сохранён — вставьте новый, чтобы заменить"
     : "123456789:AAH…";
@@ -1185,14 +1490,6 @@ function refreshSparkUi() {
 function refreshSparkNote() {
   const node = $("sparkNote");
   if (!node) return;
-  const plot = $("spark") && $("spark")._plot;
-  if (sparkHoverX != null && plot) {
-    const point = nearestPoint(plot, sparkHoverX);
-    if (point) {
-      node.textContent = `${clockTime(point.t)} · ${sparkLines().map((line) => `${line.name} ${fixed(point[line.key], 1)} ${line.unit}`).join(" · ")}`;
-      return;
-    }
-  }
   const reading = state && state.reading;
   if (!reading) {
     node.textContent = "";
@@ -1264,6 +1561,7 @@ function onSparkDown(event) {
   canvas.setPointerCapture(event.pointerId);
   const card = canvas.closest(".spark-card");
   if (card) card.classList.add("grabbing");
+  hidePlotTip();
   sparkDrag = {
     x: event.clientX,
     end: sparkSpan().end,
@@ -1711,6 +2009,37 @@ function paintCrosshair(ctx, plot, x) {
   ctx.restore();
 }
 
+function plotTipHtml(point, lines, unit) {
+  const rows = lines.map((line) => {
+    const value = point[line.key];
+    if (value == null) return "";
+    const suffix = line.unit || unit || "";
+    return `<div><i style="background:${escapeAttr(line.color)}"></i>${escapeHtml(line.name)} <b>${escapeHtml(String(fixed(value, 1)))}</b> ${escapeHtml(suffix)}</div>`;
+  }).join("");
+  return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}`;
+}
+
+function showPlotTip(event, html) {
+  const tip = $("plotTip");
+  if (!tip) return;
+  tip.innerHTML = html;
+  tip.hidden = false;
+  const pad = 16;
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let x = event.clientX + pad;
+  let y = event.clientY + pad;
+  if (x + tw > window.innerWidth - 8) x = event.clientX - tw - 12;
+  if (y + th > window.innerHeight - 8) y = event.clientY - th - 12;
+  tip.style.left = `${Math.max(8, x)}px`;
+  tip.style.top = `${Math.max(8, y)}px`;
+}
+
+function hidePlotTip() {
+  const tip = $("plotTip");
+  if (tip) tip.hidden = true;
+}
+
 function hoverChart(event) {
   const canvas = $("chart");
   const plot = canvas._plot;
@@ -1719,18 +2048,24 @@ function hoverChart(event) {
   chartHoverX = event.clientX - rect.left;
   const point = nearestPoint(plot, chartHoverX);
   if (!point) return;
-  const bits = plot.lines.map((line) => `${line.name} ${fixed(point[line.key], 1)} ${plot.unit}`);
+  const bits = plot.lines.map((line) => `${line.name} ${fixed(point[line.key], 1)} ${line.unit || plot.unit}`);
   $("chartTip").textContent = `${clockTime(point.t)}  ·  ${bits.join("   ")}`;
+  showPlotTip(event, plotTipHtml(point, plot.lines, plot.unit));
   drawChart(false);
 }
 
 function hoverSpark(event) {
-  if (sparkDrag) return;
+  if (sparkDrag) {
+    hidePlotTip();
+    return;
+  }
   const canvas = $("spark");
   const plot = canvas._plot;
   if (!plot) return;
   const rect = canvas.getBoundingClientRect();
   sparkHoverX = event.clientX - rect.left;
+  const point = nearestPoint(plot, sparkHoverX);
+  if (point) showPlotTip(event, plotTipHtml(point, plot.lines, ""));
   refreshSparkNote();
   drawSpark();
 }
@@ -1869,10 +2204,12 @@ function prepareForScreenshot() {
   const quit = $("quitDialog");
   const lab = $("labDialog");
   const scan = $("scanDialog");
+  const chat = $("chatDialog");
   if (settings && settings.open) settings.close();
   if (quit && quit.open) quit.close();
   if (lab && lab.open) lab.close();
   if (scan && scan.open) scan.close();
+  if (chat && chat.open) chat.close();
   closeAlert();
   if ($("noticeInbox")) $("noticeInbox").hidden = true;
   if ($("noticeBtn")) $("noticeBtn").classList.remove("on");
@@ -2040,7 +2377,9 @@ function openAlert(item, options) {
   const tone = noticeTone(item);
   if (!options || !options.keep) pushNotice(item);
   card.className = `alert-card ${tone}`;
-  $("alertKicker").textContent = tone === "bad" ? "Авария" : tone === "ok" ? "Снято" : "Предупреждение";
+  $("alertKicker").textContent = code === "link"
+    ? "Связь"
+    : tone === "bad" ? "Авария" : tone === "ok" ? "Снято" : "Предупреждение";
   $("alertTitle").textContent = ALERT_TITLES[code] || item.title || "Событие UPS";
   $("alertText").textContent = item.message || "";
   $("alertTime").textContent = item.t ? clockTime(item.t) : clockTime(Date.now() / 1000);
@@ -2121,6 +2460,14 @@ function alertGlyph(code) {
       <path d="M40 36c12-16 28-16 40 0"/>
       <path d="M30 24c18-22 42-22 60 0"/>
       <path d="M28 100 92 20"/>
+    </g>`;
+  }
+  if (code === "link") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5">
+      <path d="M60 86V40"/>
+      <circle cx="60" cy="94" r="6"/>
+      <path d="M40 36c12-16 28-16 40 0"/>
+      <path d="M30 24c18-22 42-22 60 0"/>
     </g>`;
   }
   return `<g fill="none" stroke="${stroke}" stroke-width="5">

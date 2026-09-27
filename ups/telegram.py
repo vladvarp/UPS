@@ -21,6 +21,7 @@ _CALLBACK_MAX_AGE = 120
 
 _MENUS = {
     "root": [["ПК", "ПО", "Отчёты"]],
+    "root_admin": [["ПК", "ПО", "Отчёты"], ["Чаты"]],
     "pc": [
         ["Выключить ПК", "Сон"],
         ["Перезагрузка", "Гибернация"],
@@ -52,18 +53,253 @@ _CONFIRM = {
     "app_restart": "Перезапустить программу UPS?",
 }
 
+def default_event_sound(code: str) -> bool:
+    return not str(code).endswith("_clear") and code != "startup"
+
+
+def default_event_tray(code: str) -> bool:
+    return not str(code).endswith("_clear") and code not in {"startup", "shutdown"}
+
+
 def event_pref(settings: dict | None, code: str) -> tuple[bool, bool]:
     src = settings or {}
     item = (src.get("telegram_events") or {}).get(code)
     if isinstance(item, dict):
         return bool(item.get("on", True)), bool(item.get("sound", True))
     if isinstance(item, bool):
-        return item, not str(code).endswith("_clear")
+        return item, default_event_sound(code)
     if code in {"on_battery", "on_battery_clear"}:
         return bool(src.get("telegram_notify_power", True)), True
     if code in {"startup", "shutdown"}:
         return True, code == "shutdown"
-    return bool(src.get("telegram_notify_alerts", True)), not str(code).endswith("_clear")
+    return bool(src.get("telegram_notify_alerts", True)), default_event_sound(code)
+
+
+def tray_pref(settings: dict | None, code: str) -> bool:
+    src = settings or {}
+    item = (src.get("telegram_events") or {}).get(code)
+    if isinstance(item, dict) and "tray" in item:
+        return bool(item.get("tray"))
+    return default_event_tray(code)
+
+
+def windows_notify_allowed(settings: dict | None, code: str) -> bool:
+    src = settings or {}
+    if not src.get("windows_notify", True):
+        return False
+    return tray_pref(src, code)
+
+
+BOT_ACTIONS = (
+    {"code": "pc_off", "group": "ПК", "title": "Выключить ПК"},
+    {"code": "pc_reboot", "group": "ПК", "title": "Перезагрузка"},
+    {"code": "pc_sleep", "group": "ПК", "title": "Сон"},
+    {"code": "pc_hibernate", "group": "ПК", "title": "Гибернация"},
+    {"code": "cancel_shutdown", "group": "ПК", "title": "Отмена выключения"},
+    {"code": "screenshot", "group": "ПО", "title": "Скриншот"},
+    {"code": "app_restart", "group": "ПО", "title": "Перезапуск программы"},
+    {"code": "status", "group": "Отчёты", "title": "Состояние"},
+    {"code": "events", "group": "Отчёты", "title": "Журнал"},
+    {"code": "day_report", "group": "Отчёты", "title": "Отчёт дня"},
+    {"code": "summary", "group": "Отчёты", "title": "Сводка"},
+)
+
+_ACTION_CODES = {item["code"] for item in BOT_ACTIONS}
+_GROUP_ACTIONS = {
+    "pc": {"pc_off", "pc_reboot", "pc_sleep", "pc_hibernate", "cancel_shutdown"},
+    "app": {"screenshot", "app_restart"},
+    "reports": {"status", "events", "day_report", "summary"},
+}
+_BUTTON_ACTION = {
+    "ПК": "menu_pc",
+    "ПО": "menu_app",
+    "Отчёты": "menu_reports",
+    "Выключить ПК": "pc_off",
+    "Сон": "pc_sleep",
+    "Перезагрузка": "pc_reboot",
+    "Гибернация": "pc_hibernate",
+    "Отмена выключения": "cancel_shutdown",
+    "Скриншот": "screenshot",
+    "Перезапуск программы": "app_restart",
+    "Состояние": "status",
+    "Журнал": "events",
+    "Отчёт дня": "day_report",
+    "Сводка": "summary",
+}
+
+
+def default_guest_actions() -> dict:
+    return {
+        "pc_off": False,
+        "pc_reboot": False,
+        "pc_sleep": False,
+        "pc_hibernate": False,
+        "cancel_shutdown": True,
+        "screenshot": True,
+        "app_restart": False,
+        "status": True,
+        "events": True,
+        "day_report": True,
+        "summary": True,
+    }
+
+
+def default_guest_events(settings: dict | None = None) -> dict:
+    return {
+        code: {
+            "on": code in {"on_battery", "on_battery_clear"},
+            "sound": code == "on_battery",
+        }
+        for code in EVENT_CODES
+    }
+
+
+def clean_guest_actions(value) -> dict:
+    defaults = default_guest_actions()
+    if not isinstance(value, dict):
+        return dict(defaults)
+    return {code: bool(value.get(code, defaults[code])) for code in defaults}
+
+
+def _guest_event_item(code: str, value) -> dict:
+    if isinstance(value, dict):
+        on = bool(value.get("on", False))
+        sound = bool(value.get("sound", on and default_event_sound(code)))
+        return {"on": on, "sound": sound and on}
+    on = bool(value)
+    return {"on": on, "sound": on and default_event_sound(code)}
+
+
+def clean_guest_events(value) -> dict:
+    src = value if isinstance(value, dict) else {}
+    return {code: _guest_event_item(code, src.get(code, False)) for code in EVENT_CODES}
+
+
+def public_chat(item: dict) -> dict:
+    guest = bool(item.get("guest"))
+    admin = bool(item.get("admin")) and not guest
+    chat = {
+        "id": item.get("id"),
+        "name": item.get("name") or "",
+        "guest": guest,
+        "admin": admin,
+    }
+    if guest:
+        stored_events = item.get("events") if isinstance(item.get("events"), dict) else None
+        stored_actions = item.get("actions") if isinstance(item.get("actions"), dict) else None
+        chat["events"] = clean_guest_events(stored_events if stored_events is not None else default_guest_events())
+        chat["actions"] = clean_guest_actions(stored_actions)
+    return chat
+
+
+def find_chat(settings: dict | None, chat_id) -> dict | None:
+    try:
+        want = int(chat_id)
+    except (TypeError, ValueError):
+        return None
+    for item in (settings or {}).get("telegram_chats") or []:
+        if isinstance(item, dict) and int(item.get("id") or 0) == want:
+            return item
+    return None
+
+
+def chat_has_action_rules(chat: dict | None) -> bool:
+    return bool(chat and chat.get("guest"))
+
+
+def chat_has_event_rules(chat: dict | None) -> bool:
+    return bool(chat and chat.get("guest"))
+
+
+def chat_can(chat: dict | None, action: str) -> bool:
+    if not chat_has_action_rules(chat):
+        return True
+    if action.startswith("menu_"):
+        group = _GROUP_ACTIONS.get(action[5:], set())
+        return any(chat_can(chat, code) for code in group)
+    actions = clean_guest_actions(chat.get("actions"))
+    return bool(actions.get(action, False))
+
+
+def chat_event_on(chat: dict | None, code: str) -> bool:
+    if not chat_has_event_rules(chat):
+        return True
+    if code in {"report", "day_report"}:
+        return chat_can(chat, "day_report")
+    if code == "summary":
+        return chat_can(chat, "summary")
+    item = clean_guest_events(chat.get("events")).get(code) or {}
+    return bool(item.get("on"))
+
+
+def chat_event_sound(settings: dict | None, chat: dict | None, code: str) -> bool:
+    if chat_has_event_rules(chat):
+        item = clean_guest_events(chat.get("events")).get(code) or {}
+        return bool(item.get("on") and item.get("sound"))
+    return event_pref(settings, code)[1]
+
+
+def chat_gets_event(settings: dict | None, chat: dict | None, code: str, force: bool = False) -> bool:
+    if chat_has_event_rules(chat):
+        return chat_event_on(chat, code)
+    if force:
+        return True
+    send, _sound = event_pref(settings, code)
+    return send
+
+
+def extract_pair_code(text: str) -> str:
+    raw = str(text or "").strip()
+    if raw.lower().startswith("/start"):
+        parts = raw.split(maxsplit=1)
+        raw = parts[1].strip() if len(parts) > 1 else ""
+    raw = raw.strip().strip("`")
+    if re.fullmatch(r"\d{4,8}", raw):
+        return raw
+    return ""
+
+
+def chat_is_admin(chat: dict | None) -> bool:
+    return bool(chat and chat.get("admin") and not chat.get("guest"))
+
+
+def global_event_map(settings: dict | None) -> dict:
+    src = settings or {}
+    return {
+        code: {"on": event_pref(src, code)[0], "sound": event_pref(src, code)[1]}
+        for code in EVENT_CODES
+    }
+
+
+def merge_global_events(settings: dict | None, patch) -> dict:
+    src = settings or {}
+    stored = src.get("telegram_events") if isinstance(src.get("telegram_events"), dict) else {}
+    merged = {}
+    for code in EVENT_CODES:
+        send, sound = event_pref(src, code)
+        prev = stored.get(code) if isinstance(stored.get(code), dict) else {}
+        merged[code] = {
+            "on": send,
+            "sound": sound,
+            "tray": bool(prev.get("tray", default_event_tray(code))),
+        }
+    if not isinstance(patch, dict):
+        return merged
+    for code, item in patch.items():
+        if code not in EVENT_CODES:
+            continue
+        if isinstance(item, dict):
+            if "on" in item:
+                merged[code]["on"] = bool(item.get("on"))
+            if "sound" in item:
+                merged[code]["sound"] = bool(item.get("sound"))
+            if "tray" in item:
+                merged[code]["tray"] = bool(item.get("tray"))
+        else:
+            merged[code]["on"] = bool(item)
+        if not merged[code]["on"]:
+            merged[code]["sound"] = False
+    return merged
 
 
 _ALERTS = {
@@ -74,6 +310,7 @@ _ALERTS = {
     "fault": True,
     "fault_clear": True,
     "link_lost": True,
+    "link": True,
     "pc_shutdown": True,
     "pc_off": True,
     "pc_reboot": True,
@@ -91,6 +328,58 @@ _ALERTS = {
     "voltage_crit_low_clear": True,
     "voltage_crit_high": True,
     "voltage_crit_high_clear": True,
+}
+
+EVENT_CODES = frozenset(_ALERTS) | {"startup", "shutdown"}
+
+EVENT_GROUPS = (
+    ("Сеть", (
+        "on_battery", "on_battery_clear", "voltage_low", "voltage_low_clear",
+        "voltage_high", "voltage_high_clear", "voltage_crit_low", "voltage_crit_low_clear",
+        "voltage_crit_high", "voltage_crit_high_clear",
+    )),
+    ("Батарея", (
+        "battery_low", "battery_low_clear", "battery_loose", "battery_loose_clear", "battery_swap",
+    )),
+    ("ИБП", ("fault", "fault_clear", "link_lost", "link")),
+    ("ПК", ("pc_shutdown", "pc_off", "pc_reboot", "pc_sleep", "pc_hibernate")),
+    ("Программа", ("startup", "shutdown", "app_restart")),
+)
+
+ACTION_GROUPS = (
+    ("ПК", ("pc_off", "pc_reboot", "pc_sleep", "pc_hibernate", "cancel_shutdown")),
+    ("ПО", ("screenshot", "app_restart")),
+    ("Отчёты", ("status", "events", "day_report", "summary")),
+)
+
+EVENT_TITLES = {
+    "on_battery": "Сеть пропала",
+    "on_battery_clear": "Сеть вернулась",
+    "voltage_low": "Сеть понижена",
+    "voltage_low_clear": "Понижение снято",
+    "voltage_high": "Сеть повышена",
+    "voltage_high_clear": "Повышение снято",
+    "voltage_crit_low": "Сеть слишком низкая",
+    "voltage_crit_low_clear": "Спад снят",
+    "voltage_crit_high": "Сеть слишком высокая",
+    "voltage_crit_high_clear": "Скачок снят",
+    "battery_low": "Батарея садится",
+    "battery_low_clear": "Батарея в норме",
+    "battery_loose": "Батареи отключены",
+    "battery_loose_clear": "Пакет в норме",
+    "battery_swap": "Пакет сменился",
+    "fault": "Неисправность",
+    "fault_clear": "Авария снята",
+    "link_lost": "Нет связи с ИБП",
+    "link": "ИБП на связи",
+    "pc_shutdown": "Отсчёт выключения",
+    "pc_off": "Выключить ПК",
+    "pc_reboot": "Перезагрузка",
+    "pc_sleep": "Сон",
+    "pc_hibernate": "Гибернация",
+    "startup": "UPS запущен",
+    "shutdown": "UPS закрыт",
+    "app_restart": "Перезапуск UPS",
 }
 
 
@@ -121,7 +410,8 @@ class TelegramBridge:
         if not token or not chats:
             return
         send, sound = event_pref(settings, "shutdown")
-        if not send:
+        targets = [item for item in chats if chat_gets_event(settings, item, "shutdown")]
+        if not targets:
             return
         stamp = datetime.now().strftime("%H:%M")
         text = f"UPS закрыт в {stamp}"
@@ -130,14 +420,20 @@ class TelegramBridge:
         def work() -> None:
             try:
                 png = notify_image("shutdown", card_title("shutdown", text), text)
-                limit = max(1.0, float(timeout) / max(1, len(chats)))
-                for item in chats:
+                limit = max(1.0, float(timeout) / max(1, len(targets)))
+                for item in targets:
                     chat_id = item.get("id")
                     try:
-                        _send_photo(token, chat_id, png, text, menu=self._board(chat_id), timeout=limit, silent=not sound)
+                        _send_photo(
+                            token, chat_id, png, text,
+                            menu=self._board(chat_id), chat=item, timeout=limit, silent=not sound,
+                        )
                     except TelegramError:
                         try:
-                            _send(token, chat_id, text, menu=self._board(chat_id), timeout=limit, silent=not sound)
+                            _send(
+                                token, chat_id, text,
+                                menu=self._board(chat_id), chat=item, timeout=limit, silent=not sound,
+                            )
                         except TelegramError:
                             pass
             except Exception:
@@ -183,7 +479,7 @@ class TelegramBridge:
                 "username": self._username,
                 "error": self._error,
                 "chats": [
-                    {"id": item.get("id"), "name": item.get("name") or str(item.get("id"))}
+                    public_chat(item)
                     for item in chats
                     if isinstance(item, dict)
                 ],
@@ -195,12 +491,8 @@ class TelegramBridge:
         if not settings.get("telegram_token"):
             return
         code = event.get("code") or ""
-        send, _sound = event_pref(settings, code)
-        if not force:
-            if not send:
-                return
-            if code not in _ALERTS:
-                return
+        if not force and code not in _ALERTS:
+            return
         text = format_alert(event, reading)
         self._broadcast_notice(str(code), text, force=force)
 
@@ -282,20 +574,33 @@ class TelegramBridge:
         if chat_id is None or not text:
             return
         name = chat.get("username") or chat.get("first_name") or str(chat_id)
-        if text.startswith("/start"):
-            self._start_chat(int(chat_id), name, text)
-            return
         if not self._known(int(chat_id)):
-            _send(self._token, chat_id, "Этот чат ещё не привязан. Код из программы:\n/start <код>")
+            self._pair_or_ask(int(chat_id), name, text)
             return
+        chat = self._chat_item(chat_id)
         lowered = _plain(text)
+        if lowered in {"чаты", "чат"}:
+            if not chat_is_admin(chat):
+                _send(self._token, chat_id, "Управлять чатами может только админ.", menu=self._board(chat_id), chat=chat)
+                return
+            self._admin_home(chat_id)
+            return
         if lowered in {"пк", "компьютер"}:
+            if not chat_can(chat, "menu_pc"):
+                self._deny(chat_id)
+                return
             self._open_menu(chat_id, "pc", "Питание компьютера.")
             return
         if lowered in {"по", "программа"}:
+            if not chat_can(chat, "menu_app"):
+                self._deny(chat_id)
+                return
             self._open_menu(chat_id, "app", "Программа UPS.")
             return
         if lowered in {"отчёты", "отчеты"}:
+            if not chat_can(chat, "menu_reports"):
+                self._deny(chat_id)
+                return
             self._open_menu(chat_id, "reports", "Отчёты и журнал.")
             return
         if lowered in {"назад", "меню"}:
@@ -303,27 +608,51 @@ class TelegramBridge:
             return
         head = lowered.split()[0] if lowered else ""
         if lowered in {"состояние", "status", "запрос состояния"} or head in {"состояние", "status"}:
+            if not chat_can(chat, "status"):
+                self._deny(chat_id)
+                return
             self._notice(chat_id, "status", self._host.telegram_status_text())
             return
         if lowered in {"отчёт дня", "отчет дня", "отчёт", "отчет", "report"}:
+            if not chat_can(chat, "day_report"):
+                self._deny(chat_id)
+                return
             self._send_html(chat_id, "day_report", *self._host.telegram_day_html())
             return
         if lowered in {"сводка", "сводка дней", "summary"}:
+            if not chat_can(chat, "summary"):
+                self._deny(chat_id)
+                return
             self._send_html(chat_id, "summary", *self._host.telegram_summary_html())
             return
         if lowered in {"неделя", "week"}:
+            if not chat_can(chat, "day_report"):
+                self._deny(chat_id)
+                return
             self._notice(chat_id, "report", self._host.telegram_report_text(24 * 7))
             return
         if lowered in {"журнал", "events"} or head in {"журнал", "events"}:
+            if not chat_can(chat, "events"):
+                self._deny(chat_id)
+                return
             self._notice(chat_id, "events", self._host.telegram_events_text())
             return
         if lowered in {"скриншот", "screenshot", "экран"} or head in {"скриншот", "screenshot", "экран"}:
+            if not chat_can(chat, "screenshot"):
+                self._deny(chat_id)
+                return
             self._send_screenshot(chat_id)
             return
         if lowered in {"перезапуск программы", "перезагрузить программу", "рестарт"}:
+            if not chat_can(chat, "app_restart"):
+                self._deny(chat_id)
+                return
             self._ask_power(chat_id, "app_restart")
             return
         if lowered in {"отмена выключения", "cancel", "отмена"}:
+            if not chat_can(chat, "cancel_shutdown"):
+                self._deny(chat_id)
+                return
             result = self._host.command("cancel_shutdown")
             self._notice(chat_id, "cancel", result.get("message") or "Готово")
             return
@@ -331,23 +660,27 @@ class TelegramBridge:
             self._notice(chat_id, "help", help_text(self._username))
             return
         if lowered in _POWER:
-            self._ask_power(chat_id, _POWER[lowered])
+            action = _POWER[lowered]
+            if not chat_can(chat, action):
+                self._deny(chat_id)
+                return
+            self._ask_power(chat_id, action)
             return
-        _send(self._token, chat_id, "Не понял. Нажмите кнопку внизу или /help.", menu=self._board(chat_id))
+        _send(self._token, chat_id, "Не понял. Нажмите кнопку внизу или /help.", menu=self._board(chat_id), chat=chat)
 
-    def _start_chat(self, chat_id: int, name: str, text: str) -> None:
+    def _pair_or_ask(self, chat_id: int, name: str, text: str) -> None:
         settings = self._host.get_settings_raw()
         pair = str(settings.get("telegram_pair") or "")
-        parts = text.split()
-        code = parts[1] if len(parts) > 1 else ""
-        if self._known(chat_id):
-            self._open_menu(chat_id, "root", f"Чат уже привязан, {name}.")
+        code = extract_pair_code(text)
+        if pair and code == pair:
+            self._host.link_telegram_chat({"id": chat_id, "name": name})
+            self._open_menu(chat_id, "root", f"Готово. Этот чат получает сообщения UPS.\n\n{help_text(self._username)}")
             return
-        if not pair or code != pair:
-            _send(self._token, chat_id, "Чтобы привязать чат, откройте вкладку Телеграм в UPS и напишите:\n/start <код>")
-            return
-        self._host.link_telegram_chat({"id": chat_id, "name": name})
-        self._open_menu(chat_id, "root", f"Готово. Этот чат получает сообщения UPS.\n\n{help_text(self._username)}")
+        _send(
+            self._token,
+            chat_id,
+            "Напишите код из вкладки Телеграм в UPS. Только цифры, без /start.",
+        )
 
     def _send_html(self, chat_id: int, code: str, body: bytes | None, name: str) -> None:
         if not body:
@@ -361,6 +694,7 @@ class TelegramBridge:
                 name,
                 "Откройте файл в браузере телефона — фильтры уже внутри.",
                 menu=self._board(chat_id),
+                chat=self._chat_item(chat_id),
             )
         except TelegramError as exc:
             self._notice(chat_id, code, f"HTML не ушёл: {exc}")
@@ -371,9 +705,9 @@ class TelegramBridge:
             self._notice(chat_id, "screenshot", "Не удалось снять главное окно. UPS должен быть запущен.")
             return
         try:
-            _send_photo(self._token, chat_id, png, "Главное окно UPS", menu=self._board(chat_id))
+            _send_photo(self._token, chat_id, png, "Главное окно UPS", menu=self._board(chat_id), chat=self._chat_item(chat_id))
         except TelegramError as exc:
-            _send(self._token, chat_id, f"Скриншот не ушёл: {exc}", menu=self._board(chat_id))
+            _send(self._token, chat_id, f"Скриншот не ушёл: {exc}", menu=self._board(chat_id), chat=self._chat_item(chat_id))
 
     def _ask_power(self, chat_id: int, action: str) -> None:
         self._notice(
@@ -396,7 +730,18 @@ class TelegramBridge:
                 _api(self._token, "answerCallbackQuery", {"callback_query_id": qid}, timeout=8)
             except TelegramError:
                 pass
-        if chat_id is None or not self._known(int(chat_id)):
+        if chat_id is None:
+            return
+        if data.startswith("a:"):
+            if not self._known(int(chat_id)) or not chat_is_admin(self._chat_item(chat_id)):
+                self._deny(chat_id)
+                return
+            if not callback_fresh(query, max_age=900):
+                _send(self._token, chat_id, "Список устарел. Откройте Чаты снова.", menu=self._board(chat_id), chat=self._chat_item(chat_id))
+                return
+            self._admin_callback(int(chat_id), data, query)
+            return
+        if not self._known(int(chat_id)):
             return
         if not callback_fresh(query):
             self._notice(chat_id, "cancel", "Кнопка устарела. Нажмите действие ещё раз.")
@@ -405,6 +750,9 @@ class TelegramBridge:
         if answer != "yes" or action not in _CONFIRM:
             self._notice(chat_id, "cancel", "Отменено.")
             return
+        if not chat_can(self._chat_item(chat_id), action):
+            self._deny(chat_id)
+            return
         if action == "app_restart":
             self._ack_offset()
         result = self._host.command(action)
@@ -412,18 +760,299 @@ class TelegramBridge:
             self._notice(chat_id, action, result.get("message") or "Готово")
 
     def _known(self, chat_id: int) -> bool:
-        settings = self._host.get_settings_raw()
-        for item in settings.get("telegram_chats") or []:
-            if isinstance(item, dict) and int(item.get("id") or 0) == chat_id:
-                return True
-        return False
+        return self._chat_item(chat_id) is not None
+
+    def _chat_item(self, chat_id) -> dict | None:
+        return find_chat(self._host.get_settings_raw(), chat_id)
+
+    def _deny(self, chat_id) -> None:
+        _send(
+            self._token,
+            chat_id,
+            "Это действие выключено для гостевого чата.",
+            menu=self._board(chat_id),
+            chat=self._chat_item(chat_id),
+        )
 
     def _board(self, chat_id) -> str:
         return self._boards.get(int(chat_id), "root")
 
     def _open_menu(self, chat_id, name: str, text: str) -> None:
         self._boards[int(chat_id)] = name
-        _send(self._token, chat_id, text, menu=name)
+        _send(self._token, chat_id, text, menu=name, chat=self._chat_item(chat_id))
+
+    def _admin_home(self, chat_id, query: dict | None = None) -> None:
+        settings = self._host.get_settings_raw()
+        rows = []
+        for item in settings.get("telegram_chats") or []:
+            if not isinstance(item, dict):
+                continue
+            pub = public_chat(item)
+            mine = int(item.get("id") or 0) == int(chat_id)
+            role = "гость" if pub["guest"] else "админ" if pub["admin"] else "полный"
+            mark = "вы · " if mine else ""
+            rows.append([{
+                "text": f"{mark}{pub['name'] or pub['id']} · {role}",
+                "callback_data": f"a:o:{pub['id']}",
+            }])
+        if not rows:
+            rows = [[{"text": "Чатов нет", "callback_data": "a:l"}]]
+        self._admin_show(chat_id, query, "Чаты. Свой профиль — общие правила. Роль себе снять нельзя.", rows)
+
+    def _admin_open(self, actor_id: int, target_id: int, query: dict | None = None) -> None:
+        target = find_chat(self._host.get_settings_raw(), target_id)
+        if target is None:
+            self._admin_home(actor_id, query)
+            return
+        pub = public_chat(target)
+        mine = int(target_id) == int(actor_id)
+        if mine:
+            self._admin_show(actor_id, query, "Ваш профиль · админ\nЗдесь общие уведомления бота. Свою роль снять нельзя.", [
+                [{"text": "Уведомления", "callback_data": f"a:eg:{target_id}:0"}],
+                [{"text": "Назад", "callback_data": "a:l"}],
+            ])
+            return
+        role = "гость" if pub["guest"] else "админ" if pub["admin"] else "полный доступ"
+        text = f"{pub['name'] or pub['id']}\nСейчас: {role}"
+        if pub["admin"]:
+            text += "\nУведомления этого чата — общие."
+        rows = [
+            [
+                {"text": "Полный", "callback_data": f"a:r:{target_id}:full"},
+                {"text": "Гость", "callback_data": f"a:r:{target_id}:guest"},
+                {"text": "Админ", "callback_data": f"a:r:{target_id}:admin"},
+            ],
+        ]
+        if pub["guest"]:
+            rows.append([
+                {"text": "Уведомления", "callback_data": f"a:eg:{target_id}:0"},
+                {"text": "Кнопки", "callback_data": f"a:ag:{target_id}:0"},
+            ])
+        rows.append([{"text": "Отвязать", "callback_data": f"a:u:{target_id}"}])
+        rows.append([{"text": "Назад", "callback_data": "a:l"}])
+        self._admin_show(actor_id, query, text, rows)
+
+    def _admin_events(self, actor_id: int, target_id: int, group: int, query: dict | None = None) -> None:
+        target = find_chat(self._host.get_settings_raw(), target_id)
+        if target is None:
+            self._admin_open(actor_id, target_id, query)
+            return
+        group = max(0, min(int(group), len(EVENT_GROUPS) - 1))
+        title, codes = EVENT_GROUPS[group]
+        mine = int(target_id) == int(actor_id)
+        if mine:
+            events = global_event_map(self._host.get_settings_raw())
+            text = f"Общие уведомления · {title}"
+        elif target.get("guest"):
+            events = public_chat(target).get("events") or clean_guest_events(target.get("events"))
+            text = f"{target.get('name') or target_id}\nУведомления · {title}"
+        else:
+            self._admin_open(actor_id, target_id, query)
+            return
+        rows = []
+        for code in codes:
+            item = events.get(code) or {"on": False, "sound": False}
+            mark = "✓" if item.get("on") else "—"
+            bell = "🔊" if item.get("sound") else "🔇"
+            rows.append([
+                {"text": f"{mark} {EVENT_TITLES.get(code, code)}", "callback_data": f"a:e:{target_id}:{code}:on"},
+                {"text": bell, "callback_data": f"a:e:{target_id}:{code}:snd"},
+            ])
+        rows.append([
+            {"text": "Все вкл", "callback_data": f"a:egon:{target_id}:{group}:1"},
+            {"text": "Все выкл", "callback_data": f"a:egon:{target_id}:{group}:0"},
+        ])
+        nav = []
+        if group > 0:
+            nav.append({"text": "←", "callback_data": f"a:eg:{target_id}:{group - 1}"})
+        if group < len(EVENT_GROUPS) - 1:
+            nav.append({"text": "→", "callback_data": f"a:eg:{target_id}:{group + 1}"})
+        nav.append({"text": "Назад", "callback_data": f"a:o:{target_id}"})
+        rows.append(nav)
+        self._admin_show(actor_id, query, text, rows)
+
+    def _admin_actions(self, actor_id: int, target_id: int, group: int, query: dict | None = None) -> None:
+        target = find_chat(self._host.get_settings_raw(), target_id)
+        if target is None:
+            self._admin_open(actor_id, target_id, query)
+            return
+        group = max(0, min(int(group), len(ACTION_GROUPS) - 1))
+        title, codes = ACTION_GROUPS[group]
+        actions = public_chat(target).get("actions") or clean_guest_actions(target.get("actions"))
+        titles = {item["code"]: item["title"] for item in BOT_ACTIONS}
+        text = f"{target.get('name') or target_id}\nКнопки · {title}"
+        rows = []
+        for code in codes:
+            mark = "✓" if actions.get(code) else "—"
+            rows.append([{
+                "text": f"{mark} {titles.get(code, code)}",
+                "callback_data": f"a:a:{target_id}:{code}",
+            }])
+        rows.append([
+            {"text": "Все вкл", "callback_data": f"a:agon:{target_id}:{group}:1"},
+            {"text": "Все выкл", "callback_data": f"a:agon:{target_id}:{group}:0"},
+        ])
+        nav = []
+        if group > 0:
+            nav.append({"text": "←", "callback_data": f"a:ag:{target_id}:{group - 1}"})
+        if group < len(ACTION_GROUPS) - 1:
+            nav.append({"text": "→", "callback_data": f"a:ag:{target_id}:{group + 1}"})
+        nav.append({"text": "Назад", "callback_data": f"a:o:{target_id}"})
+        rows.append(nav)
+        self._admin_show(actor_id, query, text, rows)
+
+    def _admin_callback(self, actor_id: int, data: str, query: dict) -> None:
+        parts = data.split(":")
+        kind = parts[1] if len(parts) > 1 else "l"
+        if kind == "l":
+            self._admin_home(actor_id, query)
+            return
+        try:
+            target_id = int(parts[2])
+        except (IndexError, TypeError, ValueError):
+            self._admin_home(actor_id, query)
+            return
+        if kind == "o":
+            self._admin_open(actor_id, target_id, query)
+            return
+        if kind == "u":
+            if int(target_id) == int(actor_id):
+                self._admin_open(actor_id, target_id, query)
+                return
+            self._admin_show(actor_id, query, "Отвязать этот чат?", [[
+                {"text": "Да, отвязать", "callback_data": f"a:U:{target_id}"},
+                {"text": "Нет", "callback_data": f"a:o:{target_id}"},
+            ]])
+            return
+        if kind == "U":
+            if int(target_id) == int(actor_id):
+                self._admin_open(actor_id, target_id, query)
+                return
+            self._host.update_telegram_chat({"id": target_id, "action": "unlink", "actor": actor_id})
+            self._admin_home(actor_id, query)
+            return
+        if kind == "r":
+            if int(target_id) == int(actor_id):
+                self._admin_open(actor_id, target_id, query)
+                return
+            role = parts[3] if len(parts) > 3 else "full"
+            payload = {"id": target_id, "actor": actor_id, "admin": role == "admin", "guest": role == "guest"}
+            self._host.update_telegram_chat(payload)
+            self._admin_open(actor_id, target_id, query)
+            return
+        target = find_chat(self._host.get_settings_raw(), target_id)
+        if target is None:
+            self._admin_open(actor_id, target_id, query)
+            return
+        if kind == "eg":
+            self._admin_events(actor_id, target_id, int(parts[3]) if len(parts) > 3 else 0, query)
+            return
+        if kind == "ag":
+            if int(target_id) == int(actor_id):
+                self._admin_open(actor_id, target_id, query)
+                return
+            self._admin_actions(actor_id, target_id, int(parts[3]) if len(parts) > 3 else 0, query)
+            return
+        mine = int(target_id) == int(actor_id)
+        role = {
+            "admin": bool(target.get("admin") and not target.get("guest")),
+            "guest": bool(target.get("guest")),
+        }
+        if kind == "e" and len(parts) >= 5:
+            if mine:
+                events = global_event_map(self._host.get_settings_raw())
+            elif target.get("guest"):
+                events = public_chat(target).get("events") or clean_guest_events(target.get("events"))
+            else:
+                self._admin_open(actor_id, target_id, query)
+                return
+            code = parts[3]
+            item = dict(events.get(code) or {"on": False, "sound": False})
+            if parts[4] == "snd":
+                item["sound"] = not item.get("sound")
+                if item["sound"]:
+                    item["on"] = True
+            else:
+                item["on"] = not item.get("on")
+                if not item["on"]:
+                    item["sound"] = False
+            events[code] = item
+            if mine:
+                self._host.update_global_telegram_events(events, actor_id)
+            else:
+                self._host.update_telegram_chat({"id": target_id, "actor": actor_id, **role, "events": events})
+            group = next((i for i, pack in enumerate(EVENT_GROUPS) if code in pack[1]), 0)
+            self._admin_events(actor_id, target_id, group, query)
+            return
+        if kind == "egon" and len(parts) >= 5:
+            group = int(parts[3])
+            on = parts[4] == "1"
+            if mine:
+                events = global_event_map(self._host.get_settings_raw())
+            elif target.get("guest"):
+                events = public_chat(target).get("events") or clean_guest_events(target.get("events"))
+            else:
+                self._admin_open(actor_id, target_id, query)
+                return
+            for code in EVENT_GROUPS[group][1]:
+                events[code] = {"on": on, "sound": on and default_event_sound(code)}
+            if mine:
+                self._host.update_global_telegram_events(events, actor_id)
+            else:
+                self._host.update_telegram_chat({"id": target_id, "actor": actor_id, **role, "events": events})
+            self._admin_events(actor_id, target_id, group, query)
+            return
+        if mine:
+            self._admin_open(actor_id, target_id, query)
+            return
+        if kind == "a" and len(parts) >= 4:
+            actions = public_chat(target).get("actions") or clean_guest_actions(target.get("actions"))
+            code = parts[3]
+            actions[code] = not actions.get(code)
+            self._host.update_telegram_chat({"id": target_id, "actor": actor_id, **role, "actions": actions})
+            if int(actor_id) == int(target_id):
+                self._refresh_menu(actor_id)
+            group = next((i for i, pack in enumerate(ACTION_GROUPS) if code in pack[1]), 0)
+            self._admin_actions(actor_id, target_id, group, query)
+            return
+        if kind == "agon" and len(parts) >= 5:
+            group = int(parts[3])
+            on = parts[4] == "1"
+            actions = public_chat(target).get("actions") or clean_guest_actions(target.get("actions"))
+            for code in ACTION_GROUPS[group][1]:
+                actions[code] = on
+            self._host.update_telegram_chat({"id": target_id, "actor": actor_id, **role, "actions": actions})
+            if int(actor_id) == int(target_id):
+                self._refresh_menu(actor_id)
+            self._admin_actions(actor_id, target_id, group, query)
+            return
+        self._admin_open(actor_id, target_id, query)
+
+    def _refresh_menu(self, chat_id) -> None:
+        chat = self._chat_item(chat_id)
+        if not chat or not self._token:
+            return
+        try:
+            _send(self._token, chat_id, "Правила обновлены.", menu=self._board(chat_id), chat=chat)
+        except TelegramError:
+            pass
+
+    def _admin_show(self, chat_id, query: dict | None, text: str, rows: list) -> None:
+        markup = {"inline_keyboard": rows}
+        message = (query or {}).get("message") or {}
+        mid = message.get("message_id")
+        if mid:
+            try:
+                _api(self._token, "editMessageText", {
+                    "chat_id": chat_id,
+                    "message_id": mid,
+                    "text": text[:3900],
+                    "reply_markup": markup,
+                }, timeout=8)
+                return
+            except TelegramError:
+                pass
+        _send(self._token, chat_id, text, inline=rows, menu=None)
 
     def _skip_pending(self, token: str) -> bool:
         try:
@@ -469,12 +1098,13 @@ class TelegramBridge:
         if not token or not text:
             return
         png = notify_image(code, card_title(code, text), text)
+        chat = self._chat_item(chat_id)
         try:
-            _send_photo(token, chat_id, png, text[:1024], inline=inline, menu=self._board(chat_id), silent=silent)
+            _send_photo(token, chat_id, png, text[:1024], inline=inline, menu=self._board(chat_id), chat=chat, silent=silent)
             if len(text) > 1024:
-                _send(token, chat_id, text[1024:], menu=None if inline else self._board(chat_id), silent=silent)
+                _send(token, chat_id, text[1024:], menu=None if inline else self._board(chat_id), chat=chat, silent=silent)
         except TelegramError:
-            _send(token, chat_id, text, menu=None if inline else self._board(chat_id), inline=inline, silent=silent)
+            _send(token, chat_id, text, menu=None if inline else self._board(chat_id), chat=chat, inline=inline, silent=silent)
 
     def _broadcast_notice(self, code: str, text: str, force: bool = False) -> None:
         token = self._token
@@ -482,20 +1112,26 @@ class TelegramBridge:
             return
         settings = self._host.get_settings_raw()
         send, sound = event_pref(settings, code)
-        if not send and not force:
-            return
         silent = not sound
+        sent = False
         for item in settings.get("telegram_chats") or []:
             if not isinstance(item, dict):
                 continue
             chat_id = item.get("id")
             if chat_id is None:
                 continue
+            if not chat_gets_event(settings, item, code, force=force):
+                continue
+            if not chat_has_event_rules(item) and not send and not force:
+                continue
             try:
-                self._notice(chat_id, code, text, silent=silent)
+                self._notice(chat_id, code, text, silent=not chat_event_sound(settings, item, code))
+                sent = True
             except TelegramError as exc:
                 with self._lock:
                     self._error = str(exc)
+        if not sent and not send and not force:
+            return
 
     def _broadcast(self, text: str) -> None:
         token = self._token
@@ -509,7 +1145,7 @@ class TelegramBridge:
             if chat_id is None:
                 continue
             try:
-                _send(token, chat_id, text, menu="root")
+                _send(token, chat_id, text, menu="root", chat=item)
             except TelegramError as exc:
                 with self._lock:
                     self._error = str(exc)
@@ -680,7 +1316,8 @@ def help_text(username: str) -> str:
         "ПК — выключение, сон, перезагрузка и гибернация.\n"
         "ПО — скриншот и перезапуск программы.\n"
         "Отчёты — состояние, журнал, отчёт дня и сводка в HTML.\n"
-        "Слева от поля ввода — состояние, скриншот и журнал."
+        "Слева от поля ввода — состояние, скриншот и журнал.\n"
+        "Новый чат привязывается кодом из программы, без /start."
     )
 
 
@@ -761,11 +1398,45 @@ def _api(token: str, method: str, payload: dict | None = None, timeout: float = 
     return data
 
 
-def _menu_rows(name: str | None) -> list[list[str]]:
-    return _MENUS.get(name or "root") or _MENUS["root"]
+def _menu_rows(name: str | None, chat: dict | None = None) -> list[list[str]]:
+    key = name or "root"
+    if key == "root" and chat_is_admin(chat):
+        raw = _MENUS["root_admin"]
+    else:
+        raw = _MENUS.get(key) or _MENUS["root"]
+    if not chat or not chat.get("guest"):
+        return raw
+    filtered = []
+    for row in raw:
+        kept = [cell for cell in row if _button_allowed(cell, chat)]
+        if kept:
+            filtered.append(kept)
+    if filtered:
+        return filtered
+    if name and name != "root":
+        return [["Назад"]]
+    if chat_can(chat, "status"):
+        return [["Состояние"]]
+    return [["Назад"]]
 
 
-def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12, silent: bool = False) -> None:
+def _button_allowed(cell: str, chat: dict | None) -> bool:
+    if cell == "Назад":
+        return True
+    action = _BUTTON_ACTION.get(cell)
+    if not action:
+        return True
+    return chat_can(chat, action)
+
+
+def _keyboard(menu: str | None, chat: dict | None = None) -> dict:
+    return {
+        "keyboard": [[{"text": cell} for cell in row] for row in _menu_rows(menu, chat)],
+        "resize_keyboard": True,
+    }
+
+
+def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12, silent: bool = False, chat: dict | None = None) -> None:
     payload = {
         "chat_id": chat_id,
         "text": text[:3900],
@@ -775,24 +1446,18 @@ def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list 
     if inline:
         payload["reply_markup"] = {"inline_keyboard": [inline] if inline and isinstance(inline[0], dict) else inline}
     elif menu:
-        payload["reply_markup"] = {
-            "keyboard": [[{"text": cell} for cell in row] for row in _menu_rows(menu)],
-            "resize_keyboard": True,
-        }
+        payload["reply_markup"] = _keyboard(menu, chat)
     _api(token, "sendMessage", payload, timeout=timeout)
 
 
-def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list | None = None, menu: str | None = "root", timeout: float = 20, silent: bool = False) -> None:
+def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list | None = None, menu: str | None = "root", timeout: float = 20, silent: bool = False, chat: dict | None = None) -> None:
     boundary = "----UPSFormBoundary7"
     if inline:
         markup = json.dumps({
             "inline_keyboard": [inline] if inline and isinstance(inline[0], dict) else inline,
         }, ensure_ascii=False)
     else:
-        markup = json.dumps({
-            "keyboard": [[{"text": cell} for cell in row] for row in _menu_rows(menu)],
-            "resize_keyboard": True,
-        }, ensure_ascii=False)
+        markup = json.dumps(_keyboard(menu, chat), ensure_ascii=False)
     parts = []
 
     def field(name: str, value: str) -> None:
@@ -834,12 +1499,9 @@ def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list
         raise TelegramError(str(data.get("description") or "скриншот не принят")[:160])
 
 
-def _send_document(token: str, chat_id, body: bytes, filename: str, caption: str = "", menu: str | None = "root") -> None:
+def _send_document(token: str, chat_id, body: bytes, filename: str, caption: str = "", menu: str | None = "root", chat: dict | None = None) -> None:
     boundary = "----UPSFormBoundary8"
-    markup = json.dumps({
-        "keyboard": [[{"text": cell} for cell in row] for row in _menu_rows(menu)],
-        "resize_keyboard": True,
-    }, ensure_ascii=False)
+    markup = json.dumps(_keyboard(menu, chat), ensure_ascii=False)
     safe_name = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in filename) or "UPS.html"
     parts = []
 

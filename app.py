@@ -71,6 +71,7 @@ def _run_window(monitor: Monitor, port: int) -> None:
         create["y"] = geom["y"]
     window = webview.create_window(APP_NAME, url, **create)
     tray = Tray(window)
+    monitor.set_tray(tray)
     monitor.set_desktop_quit(tray.apply)
     monitor.set_app_restart(_restart_program)
 
@@ -82,6 +83,10 @@ def _run_window(monitor: Monitor, port: int) -> None:
     monitor.set_screenshot(lambda: capture_main_window(window))
     window.events.closing += tray.on_closing
     window.events.minimized += tray.on_minimized
+    try:
+        window.events.restored += tray.on_restored
+    except Exception:
+        pass
     try:
         window.events.resized += lambda: _save_window_geom(monitor, window)
         window.events.moved += lambda: _save_window_geom(monitor, window)

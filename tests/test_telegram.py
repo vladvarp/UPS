@@ -8,15 +8,27 @@ from ups.notify_art import _fit_title, card_title, notify_image
 from ups.telegram import (
     TOKEN_RE,
     TelegramBridge,
+    _menu_rows,
     callback_fresh,
+    chat_can,
+    chat_event_sound,
+    chat_gets_event,
+    chat_is_admin,
+    default_guest_events,
+    merge_global_events,
     digest_due,
     event_pref,
+    extract_pair_code,
     format_alert,
     format_events,
     format_report,
     parse_clock,
+    public_chat,
     status_lines,
+    tray_pref,
+    windows_notify_allowed,
 )
+from ups.tray import Tray
 
 
 class TokenTests(unittest.TestCase):
@@ -58,8 +70,22 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(clean["spark_window"], 1800)
         self.assertEqual(clean["chart_minutes"], 360)
         self.assertEqual(clean["chart_series"], "charge")
-        self.assertEqual(clean["telegram_events"]["on_battery"], {"on": True, "sound": False})
+        self.assertEqual(
+            clean["telegram_events"]["on_battery"],
+            {"on": True, "sound": False, "tray": True},
+        )
         self.assertNotIn("unknown", clean["telegram_events"])
+        self.assertTrue(tray_pref({}, "on_battery"))
+        self.assertFalse(tray_pref({}, "on_battery_clear"))
+        self.assertFalse(tray_pref(
+            {"telegram_events": {"fault": {"on": True, "sound": True, "tray": False}}},
+            "fault",
+        ))
+        self.assertTrue(windows_notify_allowed({}, "on_battery"))
+        self.assertFalse(windows_notify_allowed({"windows_notify": False}, "on_battery"))
+        clean_win, error = _validate({"windows_notify": False})
+        self.assertIsNone(error)
+        self.assertFalse(clean_win["windows_notify"])
         geom, error = _validate({
             "window_x": -80,
             "window_y": 40,
@@ -139,7 +165,7 @@ class ReportTests(unittest.TestCase):
     def test_each_alert_has_its_own_picture(self):
         codes = [
             "on_battery", "on_battery_clear", "battery_low", "battery_low_clear",
-            "fault", "fault_clear", "link_lost", "pc_shutdown", "pc_off",
+            "fault", "fault_clear", "link_lost", "link", "pc_shutdown", "pc_off",
             "pc_reboot", "pc_sleep", "pc_hibernate", "battery_loose",
             "battery_loose_clear", "battery_swap", "startup", "report",
             "status", "screenshot", "voltage_low", "voltage_high",
@@ -160,6 +186,8 @@ class ReportTests(unittest.TestCase):
         self.assertNotEqual(pictures["screenshot"], pictures["report"])
         self.assertNotEqual(pictures["voltage_low"], pictures["voltage_high"])
         self.assertNotEqual(pictures["voltage_crit_low"], pictures["voltage_low"])
+        self.assertNotEqual(pictures["link"], pictures["link_lost"])
+        self.assertEqual(card_title("link"), "ИБП на связи")
 
     def test_card_title_stays_complete(self):
         long = "Напряжение батареи скачет — похоже, батареи отключены от ИБП"
@@ -180,6 +208,100 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(public["telegram_token"], "")
         self.assertTrue(public["telegram_token_set"])
         self.assertEqual(public["telegram_chats"][0]["name"], "ivan")
+        self.assertFalse(public["telegram_chats"][0]["guest"])
+
+    def test_guest_chat_filters_events_and_buttons(self):
+        guest = public_chat({
+            "id": 7,
+            "name": "сосед",
+            "guest": True,
+            "events": {"on_battery": True, "fault": False},
+            "actions": {
+                "status": True, "pc_off": False, "pc_reboot": False, "pc_sleep": False,
+                "pc_hibernate": False, "cancel_shutdown": False, "screenshot": True,
+            },
+        })
+        self.assertTrue(guest["guest"])
+        self.assertTrue(chat_gets_event({}, guest, "on_battery"))
+        self.assertFalse(chat_gets_event({}, guest, "fault"))
+        self.assertTrue(chat_can(guest, "status"))
+        self.assertFalse(chat_can(guest, "pc_off"))
+        self.assertTrue(chat_can(guest, "screenshot"))
+        self.assertFalse(chat_can(guest, "menu_pc"))
+        rows = [cell for row in _menu_rows("root", guest) for cell in row]
+        self.assertNotIn("ПК", rows)
+        self.assertIn("ПО", rows)
+        owner = {"id": 1, "name": "я", "guest": False}
+        self.assertFalse(chat_gets_event({"telegram_events": {"fault": {"on": False}}}, owner, "fault"))
+        self.assertTrue(chat_can(owner, "pc_off"))
+        defaults = default_guest_events()
+        self.assertTrue(defaults["on_battery"]["on"])
+        self.assertTrue(defaults["on_battery"]["sound"])
+        self.assertTrue(defaults["on_battery_clear"]["on"])
+        self.assertFalse(defaults["on_battery_clear"]["sound"])
+        self.assertFalse(defaults["fault"]["on"])
+        self.assertTrue(chat_event_sound({}, {"guest": True, "events": {"on_battery": {"on": True, "sound": True}}}, "on_battery"))
+        self.assertFalse(chat_event_sound({}, {"guest": True, "events": {"on_battery": {"on": True, "sound": False}}}, "on_battery"))
+        admin = public_chat({"id": 2, "name": "админ", "admin": True})
+        self.assertTrue(chat_is_admin(admin))
+        self.assertIn("Чаты", [cell for row in _menu_rows("root", admin) for cell in row])
+        own = {"id": 2, "admin": True, "events": {"on_battery": {"on": False, "sound": False}, "fault": {"on": True, "sound": False}}}
+        self.assertTrue(chat_is_admin(own))
+        self.assertTrue(chat_gets_event({}, own, "on_battery"))
+        self.assertFalse(chat_gets_event({"telegram_events": {"fault": {"on": False}}}, own, "fault"))
+        merged = merge_global_events(
+            {"telegram_events": {"on_battery": {"on": True, "sound": True, "tray": False}}},
+            {"on_battery": {"on": False, "sound": True}},
+        )
+        self.assertFalse(merged["on_battery"]["on"])
+        self.assertFalse(merged["on_battery"]["sound"])
+        self.assertFalse(merged["on_battery"]["tray"])
+        self.assertEqual(extract_pair_code("482913"), "482913")
+        self.assertEqual(extract_pair_code("/start 482913"), "482913")
+        self.assertEqual(extract_pair_code("/start"), "")
+        self.assertEqual(extract_pair_code("код 482913"), "")
+
+    def test_admin_self_profile_edits_global_rules(self):
+        class Host:
+            def __init__(self):
+                self.settings = {
+                    "telegram_chats": [
+                        {"id": 1, "name": "я", "admin": True},
+                        {"id": 2, "name": "гость", "guest": True},
+                    ],
+                    "telegram_events": {"fault": {"on": False, "sound": False, "tray": True}},
+                }
+                self.chat_payloads = []
+                self.global_patch = None
+
+            def get_settings_raw(self):
+                return self.settings
+
+            def update_telegram_chat(self, payload):
+                self.chat_payloads.append(payload)
+                return {"ok": True}
+
+            def update_global_telegram_events(self, patch, actor_id=None):
+                self.global_patch = patch
+                return {"ok": True}
+
+        host = Host()
+        bot = TelegramBridge(host)
+        shown = []
+        bot._admin_show = lambda chat_id, query, text, rows: shown.append((text, rows))
+        bot._admin_open(1, 1)
+        text, rows = shown[-1]
+        labels = [cell["text"] for row in rows for cell in row]
+        self.assertIn("общие", text.lower())
+        self.assertIn("Уведомления", labels)
+        self.assertNotIn("Гость", labels)
+        self.assertNotIn("Кнопки", labels)
+        bot._admin_callback(1, "a:r:1:guest", {})
+        self.assertEqual(host.chat_payloads, [])
+        bot._admin_callback(1, "a:e:1:fault:on", {})
+        self.assertIsNotNone(host.global_patch)
+        self.assertTrue(host.global_patch["fault"]["on"])
+        self.assertEqual(host.chat_payloads, [])
 
     def test_close_notice_skips_when_bot_is_off(self):
         class Host:
@@ -218,6 +340,16 @@ class ReportTests(unittest.TestCase):
             self.assertIn(item["level"], {"ok", "info", "warn", "bad"})
             self.assertTrue(item["message"].startswith("Симуляция"))
             self.assertIn(item["group"], {"Сеть", "Батарея", "ИБП", "ПК", "Программа"})
+
+    def test_tray_notify_only_when_hidden(self):
+        tray = Tray(window=None)
+        notes = []
+        tray._icon = type("Icon", (), {"notify": lambda self, message, title: notes.append((title, message))})()
+        tray.notify("ИБП на связи", "USB снова на месте")
+        self.assertEqual(notes, [])
+        tray.hidden = True
+        tray.notify("ИБП на связи", "USB снова на месте")
+        self.assertEqual(notes, [("ИБП на связи", "USB снова на месте")])
 
     def test_old_confirm_button_is_ignored(self):
         now = time.time()

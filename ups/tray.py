@@ -19,6 +19,7 @@ class Tray:
     def __init__(self, window) -> None:
         self.window = window
         self.force_quit = False
+        self.hidden = False
         self._icon = None
         self._before_quit = None
 
@@ -34,6 +35,9 @@ class Tray:
 
     def on_minimized(self) -> None:
         threading.Thread(target=self._to_tray, daemon=True).start()
+
+    def on_restored(self) -> None:
+        self.hidden = False
 
     def _open_dialog(self) -> None:
         time.sleep(0.05)
@@ -61,6 +65,7 @@ class Tray:
             self.window.hide()
         except Exception:
             pass
+        self.hidden = True
         self.start()
 
     def start(self) -> None:
@@ -80,9 +85,18 @@ class Tray:
         self._icon.run_detached()
 
     def restore(self, icon=None, item=None) -> None:
+        self.hidden = False
         try:
             self.window.show()
             self.window.restore()
+        except Exception:
+            pass
+
+    def notify(self, title: str, message: str) -> None:
+        if not self.hidden or self._icon is None:
+            return
+        try:
+            self._icon.notify(str(message or title), str(title or APP_NAME))
         except Exception:
             pass
 

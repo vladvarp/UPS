@@ -20,6 +20,7 @@ IMPORTANT = {
     "fault",
     "fault_clear",
     "link_lost",
+    "link",
     "battery_loose",
     "battery_loose_clear",
     "battery_swap",

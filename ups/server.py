@@ -102,6 +102,10 @@ def _handler(monitor: Monitor):
                 result = monitor.update_settings(payload)
                 self._json(200 if result.get("ok") else 400, result)
                 return
+            if route == "/api/telegram/chat":
+                result = monitor.update_telegram_chat(payload)
+                self._json(200 if result.get("ok") else 400, result)
+                return
             if route == "/api/quit":
                 action = str(payload.get("action") or "close")
                 self._json(200, monitor.desktop_quit(action))

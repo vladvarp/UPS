@@ -47,7 +47,24 @@ from ups.transport import (
     _likely_serial,
 )
 from ups import reports
-from ups.telegram import TOKEN_RE, TelegramBridge, format_events, format_report, parse_clock, status_lines
+from ups.notify_art import card_title
+from ups.telegram import (
+    TOKEN_RE,
+    TelegramBridge,
+    clean_guest_actions,
+    clean_guest_events,
+    default_event_sound,
+    default_event_tray,
+    default_guest_actions,
+    default_guest_events,
+    format_events,
+    format_report,
+    merge_global_events,
+    parse_clock,
+    public_chat,
+    status_lines,
+    windows_notify_allowed,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -73,6 +90,7 @@ DEFAULTS = {
     "telegram_events": {},
     "telegram_digest": False,
     "telegram_digest_time": "21:00",
+    "windows_notify": True,
     "spark_lines": ["in", "out"],
     "spark_window": 900,
     "chart_minutes": 60,
@@ -144,6 +162,8 @@ SIMULATIONS = (
      "message": "Симуляция · авария ИБП снята."},
     {"code": "link_lost", "level": "warn", "group": "ИБП", "title": "Нет связи с ИБП",
      "message": "Симуляция · связь с ИБП потеряна."},
+    {"code": "link", "level": "ok", "group": "ИБП", "title": "ИБП на связи",
+     "message": "Симуляция · USB снова подключён, связь с ИБП есть."},
     {"code": "pc_shutdown", "level": "warn", "group": "ПК", "title": "Отсчёт выключения",
      "message": "Симуляция · запущен отсчёт выключения ПК. Питание не трогаем."},
     {"code": "pc_off", "level": "bad", "group": "ПК", "title": "Выключить ПК",
@@ -194,6 +214,7 @@ class Monitor:
         self._live_since = 0.0
         self._read_fails = 0
         self._hid_misses = 0
+        self._need_link_notice = False
         self._last_raw = ""
         self._same_frames = 0
         self._frozen = False
@@ -215,6 +236,7 @@ class Monitor:
             self.settings["telegram_pair"] = f"{secrets.randbelow(1_000_000):06d}"
             _save_settings(self.settings)
         self._telegram = TelegramBridge(self)
+        self._tray = None
         self._desktop_quit = None
         self._app_restart = None
         self._close_announced = False
@@ -231,6 +253,9 @@ class Monitor:
             _save_settings(self.settings)
         if demo:
             self._enter_demo()
+
+    def set_tray(self, tray) -> None:
+        self._tray = tray
 
     def set_desktop_quit(self, handler) -> None:
         self._desktop_quit = handler
@@ -360,9 +385,86 @@ class Monitor:
             chats = [item for item in self.settings.get("telegram_chats") or [] if isinstance(item, dict)]
             chat_id = int(chat["id"])
             if not any(int(item.get("id") or 0) == chat_id for item in chats):
-                chats.append({"id": chat_id, "name": str(chat.get("name") or "")[:80]})
+                chats.append({"id": chat_id, "name": str(chat.get("name") or "")[:80], "guest": False})
             self.settings["telegram_chats"] = chats
             _save_settings(self.settings)
+
+    def update_telegram_chat(self, payload: dict) -> dict:
+        action = str((payload or {}).get("action") or "update")
+        try:
+            chat_id = int((payload or {}).get("id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "Нет id чата"}
+        actor_id = (payload or {}).get("actor")
+        with self._lock:
+            chats = [item for item in self.settings.get("telegram_chats") or [] if isinstance(item, dict)]
+            if actor_id is not None:
+                try:
+                    actor = next(item for item in chats if int(item.get("id") or 0) == int(actor_id))
+                except (StopIteration, TypeError, ValueError):
+                    return {"ok": False, "message": "Нет прав админа"}
+                if not actor.get("admin") or actor.get("guest"):
+                    return {"ok": False, "message": "Нет прав админа"}
+            if actor_id is not None and int(actor_id) == chat_id:
+                if action == "unlink" or payload.get("guest") or ("admin" in payload and not payload.get("admin")):
+                    return {"ok": False, "message": "Админ не может снять с себя права"}
+            if action == "unlink":
+                chats = [item for item in chats if int(item.get("id") or 0) != chat_id]
+                self.settings["telegram_chats"] = chats
+                _save_settings(self.settings)
+                return {"ok": True, "message": "Чат отвязан", "settings": _public_settings(self.settings)}
+            found = None
+            for item in chats:
+                if int(item.get("id") or 0) == chat_id:
+                    found = item
+                    break
+            if found is None:
+                return {"ok": False, "message": "Чат не найден"}
+            if payload.get("admin"):
+                found["admin"] = True
+                found["guest"] = False
+            elif "guest" in payload:
+                found["guest"] = bool(payload.get("guest"))
+                if found["guest"]:
+                    found["admin"] = False
+            if "admin" in payload and not payload.get("admin") and not found.get("guest"):
+                found["admin"] = False
+            if found.get("admin") and not found.get("guest"):
+                found.pop("events", None)
+                found.pop("actions", None)
+            else:
+                if "events" in payload:
+                    found["events"] = clean_guest_events(payload.get("events"))
+                elif found.get("guest") and not isinstance(found.get("events"), dict):
+                    found["events"] = default_guest_events(self.settings)
+                else:
+                    found.pop("events", None)
+                if "actions" in payload:
+                    found["actions"] = clean_guest_actions(payload.get("actions"))
+                elif found.get("guest") and not isinstance(found.get("actions"), dict):
+                    found["actions"] = default_guest_actions()
+                else:
+                    found.pop("actions", None)
+            self.settings["telegram_chats"] = chats
+            _save_settings(self.settings)
+            snapshot = _public_settings(self.settings)
+        return {"ok": True, "message": "Правила чата сохранены", "settings": snapshot, "chat": next((item for item in snapshot.get("telegram_chats") or [] if int(item.get("id") or 0) == chat_id), None)}
+
+    def update_global_telegram_events(self, patch, actor_id=None) -> dict:
+        with self._lock:
+            if actor_id is not None:
+                chats = [item for item in self.settings.get("telegram_chats") or [] if isinstance(item, dict)]
+                try:
+                    actor = next(item for item in chats if int(item.get("id") or 0) == int(actor_id))
+                except (StopIteration, TypeError, ValueError):
+                    return {"ok": False, "message": "Нет прав админа"}
+                if not actor.get("admin") or actor.get("guest"):
+                    return {"ok": False, "message": "Нет прав админа"}
+            self.settings["telegram_events"] = merge_global_events(self.settings, patch)
+            _save_settings(self.settings)
+            snapshot = dict(self.settings)
+        self._telegram.configure(snapshot)
+        return {"ok": True, "message": "Общие уведомления сохранены", "settings": _public_settings(snapshot)}
 
     def telegram_status_text(self) -> str:
         with self._lock:
@@ -744,7 +846,18 @@ class Monitor:
             self._mode = "searching"
             self._message = message
         if had:
+            self._need_link_notice = True
             self._event("warn", "link_lost", "Связь с ИБП прервалась, ищу снова")
+
+    def _announce_link(self) -> None:
+        if not self._need_link_notice:
+            return
+        self._need_link_notice = False
+        label = getattr(self._transport, "label", "") if self._transport else ""
+        text = "ИБП снова на связи"
+        if label:
+            text = f"{text} · {label}"
+        self._event("ok", "link", text)
 
     def _poll_demo(self) -> None:
         raw = self._demo.query_q1()
@@ -854,7 +967,6 @@ class Monitor:
                     self._handle_q1(self._transport.query_q1())
                 except (TransportError, ProtocolError, OSError):
                     pass
-                self._event("info", "link", f"Подключено: {self._transport.label}")
                 with self._lock:
                     if self._reading is not None:
                         self._mode = "live"
@@ -891,7 +1003,6 @@ class Monitor:
                 with self._lock:
                     self.settings["serial_port"] = serial.port
                     _save_settings(self.settings)
-            self._event("info", "link", f"Подключено: {serial.label}")
             with self._lock:
                 self._mode = "live"
                 self._message = "Связь есть"
@@ -910,6 +1021,8 @@ class Monitor:
                     "Бесперебойник не найден. После переподключения порт мог смениться. "
                     f"Сейчас HID {hid_n}, COM: {coms}."
                 )
+        if time.time() - self._session_started > 2:
+            self._need_link_notice = True
 
     def _maybe_identity(self, force: bool = False) -> None:
         if self._transport is None or getattr(self._transport, "kind", "") == "demo":
@@ -1022,6 +1135,7 @@ class Monitor:
         self._edges_from(reading)
         if source == "live":
             self._store(reading)
+            self._announce_link()
 
     def _visible_countdown(self, now: float | None = None) -> int | None:
         if self._shutdown_held or self._shutdown_at is None:
@@ -1208,9 +1322,23 @@ class Monitor:
         )
         self._db.commit()
         self._telegram.notify(item, reading, force=force)
+        self._notify_tray(item)
         if item.get("code") in reports.IMPORTANT:
             self._journal_at = 0.0
             self._flush_journal()
+
+    def _notify_tray(self, item: dict) -> None:
+        tray = self._tray
+        if tray is None or not getattr(tray, "hidden", False):
+            return
+        code = str(item.get("code") or "")
+        if not windows_notify_allowed(self.get_settings_raw(), code):
+            return
+        title = card_title(code, item.get("message"))
+        try:
+            tray.notify(title, str(item.get("message") or title))
+        except Exception:
+            pass
 
     def _store(self, reading: dict) -> None:
         self._db.execute(
@@ -1396,7 +1524,7 @@ _TG_EVENT_CODES = {
     "voltage_high", "voltage_high_clear", "voltage_crit_low", "voltage_crit_low_clear",
     "voltage_crit_high", "voltage_crit_high_clear", "battery_low", "battery_low_clear",
     "battery_loose", "battery_loose_clear", "battery_swap", "fault", "fault_clear",
-    "link_lost", "pc_shutdown", "pc_off", "pc_reboot", "pc_sleep", "pc_hibernate",
+    "link_lost", "link", "pc_shutdown", "pc_off", "pc_reboot", "pc_sleep", "pc_hibernate",
     "startup", "shutdown", "app_restart",
 }
 
@@ -1409,9 +1537,17 @@ def _clean_telegram_events(value) -> dict:
         if code not in _TG_EVENT_CODES:
             continue
         if isinstance(item, dict):
-            clean[code] = {"on": bool(item.get("on", True)), "sound": bool(item.get("sound", True))}
+            clean[code] = {
+                "on": bool(item.get("on", True)),
+                "sound": bool(item.get("sound", True)),
+                "tray": bool(item.get("tray", default_event_tray(code))),
+            }
         else:
-            clean[code] = {"on": bool(item), "sound": not str(code).endswith("_clear")}
+            clean[code] = {
+                "on": bool(item),
+                "sound": default_event_sound(code),
+                "tray": default_event_tray(code),
+            }
     return clean
 
 
@@ -1431,7 +1567,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             continue
         if key in {
             "sound", "pc_shutdown", "telegram_notify_power", "telegram_notify_alerts",
-            "telegram_digest", "autostart", "journal_enabled",
+            "telegram_digest", "autostart", "journal_enabled", "windows_notify",
         }:
             clean[key] = bool(value)
             continue
@@ -1555,7 +1691,7 @@ def _public_settings(settings: dict) -> dict:
     data["telegram_token_set"] = bool(data.get("telegram_token"))
     data["telegram_token"] = ""
     data["telegram_chats"] = [
-        {"id": item.get("id"), "name": item.get("name") or ""}
+        public_chat(item)
         for item in data.get("telegram_chats") or []
         if isinstance(item, dict)
     ]

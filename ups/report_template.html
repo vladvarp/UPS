@@ -332,7 +332,7 @@ function paintDays() {
 function kindMatch(code) {
   const value = state.kind;
   if (value === "all") return true;
-  if (value === "power") return String(code).indexOf("on_battery") === 0 || code === "link_lost";
+  if (value === "power") return String(code).indexOf("on_battery") === 0 || code === "link_lost" || code === "link";
   if (value === "voltage") return String(code).indexOf("voltage_") === 0;
   if (value === "battery") return String(code).indexOf("battery_") === 0;
   if (value === "pc") return String(code).indexOf("pc_") === 0 || code === "app_restart";

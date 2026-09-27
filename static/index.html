@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=55">
+  <link rel="stylesheet" href="/app.css?v=65">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -258,7 +258,7 @@
         </article>
         <article class="card prose">
           <h2>Обмен</h2>
-          <ol class="trace" id="devTrace"></ol>
+          <ol class="dev-log" id="devTrace"></ol>
           <h2>Порты</h2>
           <button type="button" class="ghost" id="devScan">Сканировать порты</button>
           <ul id="devPorts"></ul>
@@ -304,21 +304,27 @@
           <article class="card tg-card">
             <p class="step">Шаг 2</p>
             <h3>Привязка чата</h3>
-            <p>Напишите боту команду ниже. После этого он начнёт присылать сообщения.</p>
+            <p>Откройте бота и напишите этот код.</p>
             <div class="pair">
               <div>
                 <span>Код</span>
                 <strong id="tgPairCode">————</strong>
               </div>
-              <button type="button" class="ghost" id="tgCopyPair">Копировать команду</button>
+              <div class="pair-tools">
+                <button type="button" class="icon" id="tgNewPair" title="Выпустить новый код" aria-label="Выпустить новый код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v5h-5"/></svg>
+                </button>
+                <button type="button" class="icon" id="tgCopyPair" title="Копировать код" aria-label="Копировать код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 16V5h11"/></svg>
+                </button>
+              </div>
             </div>
-            <p class="pair-cmd" id="tgPairCmd">/start</p>
-            <button type="button" class="ghost" id="tgNewPair">Выпустить новый код</button>
           </article>
 
           <article class="card tg-card">
             <p class="step">Чаты</p>
             <h3>Кто получает сообщения</h3>
+            <p>Гость видит только свои события и кнопки. Админ может менять права других чатов из бота.</p>
             <ul class="tg-chats" id="tgChatList">
               <li class="empty">Пока никто не привязан.</li>
             </ul>
@@ -356,9 +362,14 @@
 
           <article class="card tg-card tg-events">
             <p class="step">События бота</p>
-            <h3>Что слать и со звуком ли</h3>
-            <p>Каждое событие отдельно. Без звука телефон получит карточку тихо.</p>
-            <div class="tg-event-head"><span>Событие</span><span>Бот</span><span>Звук</span></div>
+            <h3>Что слать, со звуком и в трей</h3>
+            <p>Бот — в Telegram. Звук — на телефоне. Трей — карточка Windows, только когда окно свёрнуто.</p>
+            <label class="switch windows-master">
+              <input id="windowsNotify" type="checkbox">
+              <span></span>
+              <em>Уведомления Windows в трее</em>
+            </label>
+            <div class="tg-event-head"><span>Событие</span><span>Бот</span><span>Звук</span><span>Трей</span></div>
             <div class="tg-event-list" id="tgEventList"></div>
           </article>
         </div>
@@ -449,6 +460,40 @@
     <div class="lab-groups" id="labGroups"></div>
   </dialog>
 
+  <dialog id="chatDialog" class="lab-dialog">
+    <header>
+      <div>
+        <p class="eyebrow">Чат бота</p>
+        <h2 id="chatDialogTitle">Правила чата</h2>
+      </div>
+      <button type="button" class="icon" id="closeChat" aria-label="Закрыть">×</button>
+    </header>
+    <p class="lead" id="chatDialogLead">Гость — свои уведомления и кнопки. Админ в боте правит чужие чаты; свой профиль — общие правила, роль снять нельзя.</p>
+    <label class="switch">
+      <input id="chatGuest" type="checkbox">
+      <span></span>
+      <em>Гостевой чат</em>
+    </label>
+    <label class="switch">
+      <input id="chatAdmin" type="checkbox">
+      <span></span>
+      <em>Админ — правит другие чаты</em>
+    </label>
+    <div id="chatRules" hidden>
+      <section class="chat-rules-block">
+        <h3>Уведомления</h3>
+        <p>В группе можно включить все события или весь звук сразу.</p>
+        <div class="chat-rule-head"><span>Событие</span><span>Бот</span><span>Звук</span></div>
+        <div id="chatEventList"></div>
+      </section>
+      <section class="chat-rules-block">
+        <h3>Кнопки бота</h3>
+        <div class="chat-rule-head chat-rule-head-one"><span>Кнопка</span><span>Вкл</span></div>
+        <div id="chatActionList"></div>
+      </section>
+    </div>
+  </dialog>
+
   <dialog id="quitDialog" class="quit-dialog">
     <img class="quit-mark" src="/icon.svg" alt="" width="48" height="48">
     <h2>Закрыть UPS?</h2>
@@ -489,6 +534,7 @@
     </button>
   </div>
   <div class="toast" id="toast" hidden></div>
-  <script src="/app.js?v=56"></script>
+  <div class="plot-tip" id="plotTip" hidden></div>
+  <script src="/app.js?v=65"></script>
 </body>
 </html>
