@@ -498,37 +498,58 @@ class TelegramBridge:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            token = self._token
-            if not token:
-                self._stop.wait(1.0)
-                continue
-            if not self._ok:
-                if not self._hello(token):
-                    self._stop.wait(8)
-                    continue
-                if not self._backlog_cleared:
-                    self._backlog_cleared = self._skip_pending(token)
+            try:
+                self._poll_once()
+            except Exception as exc:
+                with self._lock:
+                    self._error = str(exc)[:160]
+                self._stop.wait(3)
+
+    def _poll_once(self) -> None:
+        token = self._token
+        if not token:
+            self._stop.wait(1.0)
+            return
+        if not self._ok:
+            if not self._hello(token):
+                self._stop.wait(8)
+                return
+            if not self._backlog_cleared:
+                self._backlog_cleared = self._skip_pending(token)
+        try:
             self._announce_start()
             self._maybe_digest()
+        except Exception as exc:
+            with self._lock:
+                self._error = str(exc)[:160]
+        try:
+            data = _api(token, "getUpdates", {
+                "timeout": 25,
+                "offset": self._offset,
+                "allowed_updates": ["message", "callback_query"],
+            }, timeout=35)
+        except TelegramError as exc:
+            self._on_poll_error(exc)
+            return
+        for update in data.get("result") or []:
+            self._offset = int(update.get("update_id", 0)) + 1
+            _save_offset(self._offset)
             try:
-                data = _api(token, "getUpdates", {
-                    "timeout": 8,
-                    "offset": self._offset,
-                    "allowed_updates": ["message", "callback_query"],
-                }, timeout=12)
-            except TelegramError as exc:
+                self._handle(update)
+            except Exception as exc:
                 with self._lock:
-                    self._ok = False
-                    self._error = str(exc)
-                self._stop.wait(6)
-                continue
-            for update in data.get("result") or []:
-                self._offset = int(update.get("update_id", 0)) + 1
-                _save_offset(self._offset)
-                try:
-                    self._handle(update)
-                except Exception as exc:
-                    self._error = str(exc)
+                    self._error = str(exc)[:160]
+
+    def _on_poll_error(self, exc: TelegramError) -> None:
+        text = str(exc)
+        with self._lock:
+            self._error = text[:160]
+            if poll_error_fatal(text):
+                self._ok = False
+        wait = 3.0 if "conflict" in text.lower() else 2.0
+        if poll_error_fatal(text):
+            wait = 8.0
+        self._stop.wait(wait)
 
     def _hello(self, token: str) -> bool:
         try:
@@ -641,7 +662,7 @@ class TelegramBridge:
             if not chat_can(chat, "screenshot"):
                 self._deny(chat_id)
                 return
-            self._send_screenshot(chat_id)
+            threading.Thread(target=self._send_screenshot, args=(int(chat_id),), daemon=True).start()
             return
         if lowered in {"перезапуск программы", "перезагрузить программу", "рестарт"}:
             if not chat_can(chat, "app_restart"):
@@ -1168,6 +1189,11 @@ class TelegramError(RuntimeError):
     pass
 
 
+def poll_error_fatal(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return "unauthorized" in lowered or "invalid token" in lowered or "webhook" in lowered
+
+
 def callback_fresh(query: dict, now: float | None = None, max_age: int = _CALLBACK_MAX_AGE) -> bool:
     stamp = ((query.get("message") or {}).get("date"))
     try:
@@ -1381,7 +1407,10 @@ def _api(token: str, method: str, payload: dict | None = None, timeout: float = 
     request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            raw = response.read().decode("utf-8")
+        data = json.loads(raw)
+    except TelegramError:
+        raise
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")
         try:
@@ -1393,6 +1422,8 @@ def _api(token: str, method: str, payload: dict | None = None, timeout: float = 
         raise TelegramError("нет связи с Telegram") from exc
     except TimeoutError as exc:
         raise TelegramError("Telegram не ответил") from exc
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise TelegramError(str(exc)[:160] or "сбой Telegram") from exc
     if not data.get("ok"):
         raise TelegramError(str(data.get("description") or "ответ Telegram без ok")[:160])
     return data

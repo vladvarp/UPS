@@ -8,6 +8,8 @@ from ups.notify_art import _fit_title, card_title, notify_image
 from ups.telegram import (
     TOKEN_RE,
     TelegramBridge,
+    TelegramError,
+    _api,
     _menu_rows,
     callback_fresh,
     chat_can,
@@ -23,6 +25,7 @@ from ups.telegram import (
     format_events,
     format_report,
     parse_clock,
+    poll_error_fatal,
     public_chat,
     status_lines,
     tray_pref,
@@ -340,6 +343,36 @@ class ReportTests(unittest.TestCase):
             bot.announce_stop(0.8)
         self.assertLess(time.time() - started, 2.0)
         self.assertEqual(card_title("shutdown"), "UPS закрыт")
+
+    def test_poll_errors_do_not_kill_inbound_loop(self):
+        self.assertFalse(poll_error_fatal("Telegram не ответил"))
+        self.assertFalse(poll_error_fatal("Conflict: terminated by other getUpdates request"))
+        self.assertTrue(poll_error_fatal("Unauthorized"))
+        self.assertTrue(poll_error_fatal("can't use getUpdates if webhook is set"))
+        host = type("Host", (), {
+            "get_settings_raw": lambda self: {"telegram_token": "x", "telegram_chats": []},
+        })()
+        bot = TelegramBridge(host)
+        bot._token = "x"
+        bot._ok = True
+        bot._stop.set()
+        bot._on_poll_error(TelegramError("Telegram не ответил"))
+        self.assertTrue(bot._ok)
+        bot._on_poll_error(TelegramError("Unauthorized"))
+        self.assertFalse(bot._ok)
+
+    def test_api_wraps_broken_json(self):
+        class FakeResp:
+            def read(self):
+                return b"NOT JSON"
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+
+        with patch("urllib.request.urlopen", return_value=FakeResp()):
+            with self.assertRaises(TelegramError):
+                _api("token", "getMe")
 
     def test_simulation_catalog_is_safe_software_only(self):
         codes = [item["code"] for item in SIMULATIONS]
