@@ -61,6 +61,22 @@ class TokenTests(unittest.TestCase):
         self.assertFalse(sound)
         send, sound = event_pref({"telegram_events": {"fault": {"on": False, "sound": True}}}, "fault")
         self.assertFalse(send)
+        send, sound = event_pref({}, "voltage_low_clear")
+        self.assertTrue(send)
+        self.assertTrue(sound)
+        send, sound = event_pref({
+            "telegram_events": {
+                "voltage_low": {"on": True, "sound": True, "tray": True},
+                "voltage_low_clear": {"on": True, "sound": False, "tray": False},
+                "voltage_high_clear": {"on": False, "sound": False, "tray": False},
+            }
+        }, "voltage_low_clear")
+        self.assertTrue(send)
+        self.assertTrue(sound)
+        send, sound = event_pref({
+            "telegram_events": {"voltage_high_clear": {"on": False, "sound": False}}
+        }, "voltage_high_clear")
+        self.assertFalse(send)
         clean, error = _validate({
             "spark_lines": ["in", "load", "nope"],
             "spark_window": 1800,
@@ -172,7 +188,7 @@ class ReportTests(unittest.TestCase):
             "pc_reboot", "pc_sleep", "pc_hibernate", "battery_loose",
             "battery_loose_clear", "battery_swap", "startup", "report",
             "status", "screenshot", "voltage_low", "voltage_high",
-            "voltage_crit_low", "voltage_crit_high",
+            "voltage_crit_low", "voltage_crit_high", "battery_boost",
         ]
         pictures = {}
         from io import BytesIO
@@ -189,6 +205,7 @@ class ReportTests(unittest.TestCase):
         self.assertNotEqual(pictures["screenshot"], pictures["report"])
         self.assertNotEqual(pictures["voltage_low"], pictures["voltage_high"])
         self.assertNotEqual(pictures["voltage_crit_low"], pictures["voltage_low"])
+        self.assertNotEqual(pictures["battery_boost"], pictures["battery_low"])
         self.assertNotEqual(pictures["link"], pictures["link_lost"])
         self.assertEqual(card_title("link"), "ИБП на связи")
 
@@ -377,7 +394,7 @@ class ReportTests(unittest.TestCase):
     def test_simulation_catalog_is_safe_software_only(self):
         codes = [item["code"] for item in SIMULATIONS]
         self.assertEqual(len(codes), len(set(codes)))
-        self.assertTrue({"on_battery", "pc_off", "app_restart", "voltage_crit_high"}.issubset(codes))
+        self.assertTrue({"on_battery", "pc_off", "app_restart", "voltage_crit_high", "battery_boost"}.issubset(codes))
         for item in SIMULATIONS:
             self.assertIn(item["level"], {"ok", "info", "warn", "bad"})
             self.assertTrue(item["message"].startswith("Симуляция"))

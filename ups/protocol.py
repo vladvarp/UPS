@@ -253,6 +253,8 @@ VOLTAGE_CRIT_LOW = 180.0
 VOLTAGE_CRIT_HIGH = 250.0
 _VOLTAGE_HYST = 5.0
 _MAINS_PRESENT = 80.0
+BOOST_DELTA = 20.0
+BOOST_HYST = 5.0
 
 
 def voltage_limits(settings: dict | None = None) -> dict:
@@ -314,6 +316,19 @@ def mains_voltage_active(code: str, volts, on_battery: bool, previous: bool, lim
     if side == "below":
         return value < trigger if not previous else value < clear
     return value > trigger if not previous else value > clear
+
+
+def battery_boost_active(input_v, output_v, on_battery: bool, previous: bool = False) -> bool:
+    """True when output is fed from the battery while mains is still present."""
+    if not mains_present(input_v, on_battery):
+        return False
+    try:
+        delta = float(output_v) - float(input_v)
+    except (TypeError, ValueError):
+        return False
+    trigger = BOOST_DELTA
+    clear = BOOST_DELTA - BOOST_HYST
+    return delta > trigger if not previous else delta > clear
 
 
 def _limit_num(value, fallback: float) -> float:

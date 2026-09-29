@@ -53,7 +53,17 @@ _CONFIRM = {
     "app_restart": "Перезапустить программу UPS?",
 }
 
+_VOLTAGE_CLEARS = frozenset({
+    "voltage_low_clear",
+    "voltage_high_clear",
+    "voltage_crit_low_clear",
+    "voltage_crit_high_clear",
+})
+
+
 def default_event_sound(code: str) -> bool:
+    if code in _VOLTAGE_CLEARS:
+        return True
     return not str(code).endswith("_clear") and code != "startup"
 
 
@@ -63,15 +73,26 @@ def default_event_tray(code: str) -> bool:
 
 def event_pref(settings: dict | None, code: str) -> tuple[bool, bool]:
     src = settings or {}
+    on, sound = _event_pref_stored(src, code)
+    if code in _VOLTAGE_CLEARS and on:
+        sound = True
+    return on, sound
+
+
+def _event_pref_stored(src: dict, code: str) -> tuple[bool, bool]:
     item = (src.get("telegram_events") or {}).get(code)
     if isinstance(item, dict):
-        return bool(item.get("on", True)), bool(item.get("sound", True))
+        return bool(item.get("on", True)), bool(item.get("sound", default_event_sound(code)))
     if isinstance(item, bool):
         return item, default_event_sound(code)
     if code in {"on_battery", "on_battery_clear"}:
         return bool(src.get("telegram_notify_power", True)), True
     if code in {"startup", "shutdown"}:
         return True, code == "shutdown"
+    if code in _VOLTAGE_CLEARS:
+        parent = code[: -len("_clear")]
+        parent_on, _parent_sound = _event_pref_stored(src, parent)
+        return parent_on, True
     return bool(src.get("telegram_notify_alerts", True)), default_event_sound(code)
 
 
@@ -328,6 +349,8 @@ _ALERTS = {
     "voltage_crit_low_clear": True,
     "voltage_crit_high": True,
     "voltage_crit_high_clear": True,
+    "battery_boost": True,
+    "battery_boost_clear": True,
 }
 
 EVENT_CODES = frozenset(_ALERTS) | {"startup", "shutdown"}
@@ -336,7 +359,7 @@ EVENT_GROUPS = (
     ("Сеть", (
         "on_battery", "on_battery_clear", "voltage_low", "voltage_low_clear",
         "voltage_high", "voltage_high_clear", "voltage_crit_low", "voltage_crit_low_clear",
-        "voltage_crit_high", "voltage_crit_high_clear",
+        "voltage_crit_high", "voltage_crit_high_clear", "battery_boost", "battery_boost_clear",
     )),
     ("Батарея", (
         "battery_low", "battery_low_clear", "battery_loose", "battery_loose_clear", "battery_swap",
@@ -363,6 +386,8 @@ EVENT_TITLES = {
     "voltage_crit_low_clear": "Спад снят",
     "voltage_crit_high": "Сеть слишком высокая",
     "voltage_crit_high_clear": "Скачок снят",
+    "battery_boost": "Подпитка с батареи",
+    "battery_boost_clear": "Подпитка снята",
     "battery_low": "Батарея садится",
     "battery_low_clear": "Батарея в норме",
     "battery_loose": "Батареи отключены",
@@ -1271,6 +1296,13 @@ def status_lines(reading: dict) -> list[str]:
         load_line,
         f"Батарея {fmt(reading.get('battery_v'))} В · {fmt(reading.get('battery_pct'), 0)}%",
     ])
+    if reading.get("battery_boost"):
+        inn = reading.get("input_v")
+        out = reading.get("output_v")
+        try:
+            lines.append(f"Подпитка с батареи: выход выше входа на {float(out) - float(inn):.1f} В")
+        except (TypeError, ValueError):
+            lines.append("Подпитка с батареи")
     if reading.get("battery_loose"):
         lines.append("Батареи: напряжение скачет, похоже отключены")
     swap = reading.get("battery_swap")

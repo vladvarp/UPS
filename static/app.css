@@ -786,6 +786,22 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
 .schematic[data-mode="mains"] .path-batt.trace { opacity: 0.22; filter: saturate(0.35); }
 .schematic[data-mode="mains"] .path-batt.trace i,
 .schematic[data-mode="mains"] .path-batt.trace b { display: none; }
+.schematic[data-boost="1"] .path-batt.mod {
+  border-color: rgba(224, 176, 106, 0.55);
+  color: var(--gold);
+  box-shadow: inset 0 0 22px rgba(224, 176, 106, 0.1), 0 0 16px rgba(224, 176, 106, 0.12);
+}
+.schematic[data-boost="1"] .path-batt.mod h3 { color: var(--gold); }
+.schematic[data-boost="1"] .path-batt.trace {
+  opacity: 1;
+  filter: none;
+}
+.schematic[data-boost="1"] .path-batt.trace i,
+.schematic[data-boost="1"] .path-batt.trace b { display: block; }
+#deltaV.boost {
+  color: var(--gold);
+  text-shadow: 0 0 14px rgba(224, 176, 106, 0.35);
+}
 
 .schematic[data-mode="battery"] .path-batt.mod,
 .schematic[data-mode="battery"] .path-out.mod {
@@ -1351,6 +1367,7 @@ canvas { width: 100%; display: block; cursor: crosshair; }
   flex: none;
 }
 .plot-tip b { font-weight: 650; }
+.plot-tip .boost { color: var(--gold); }
 .chart-help { margin: 10px 4px 0; color: var(--muted); font-size: 13px; }
 .log-head h2 { margin: 0; }
 .events, ol.dev-log, #devPorts { list-style: none; padding: 0; margin: 12px 0 0; }

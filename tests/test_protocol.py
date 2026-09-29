@@ -4,6 +4,7 @@ from unittest.mock import patch
 from ups.monitor import _validate
 from ups.transport import TransportError, probe_serial
 from ups.protocol import (
+    battery_boost_active,
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
@@ -145,6 +146,15 @@ class VoltageAlertTests(unittest.TestCase):
         self.assertEqual(voltage_state(199, False, limits), "ok")
         self.assertFalse(mains_voltage_active("voltage_low", 199, False, False, limits))
         self.assertTrue(mains_voltage_active("voltage_low", 194, False, False, limits))
+
+    def test_battery_boost_when_output_is_20v_above_input(self):
+        self.assertFalse(battery_boost_active(220, 239, False, False))
+        self.assertTrue(battery_boost_active(200, 221, False, False))
+        self.assertFalse(battery_boost_active(220, 241, True, False))
+        self.assertTrue(battery_boost_active(200, 216, False, True))
+        self.assertFalse(battery_boost_active(200, 214, False, True))
+        self.assertFalse(battery_boost_active(None, 230, False, False))
+        self.assertFalse(battery_boost_active(0, 220, True, True))
 
     def test_voltage_order_is_checked(self):
         clean, error = _validate({"volt_low": 240, "volt_high": 200, "volt_crit_low": 180, "volt_crit_high": 250})

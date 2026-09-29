@@ -22,6 +22,7 @@ from ups.protocol import (
     load_watts,
     mains_present,
     mains_voltage_active,
+    battery_boost_active,
     mode_label,
     voltage_limits,
     voltage_note,
@@ -146,6 +147,10 @@ SIMULATIONS = (
      "message": "Симуляция · вход выше критического порога."},
     {"code": "voltage_crit_high_clear", "level": "ok", "group": "Сеть", "title": "Скачок снят",
      "message": "Симуляция · критически высокое напряжение снято."},
+    {"code": "battery_boost", "level": "warn", "group": "Сеть", "title": "Подпитка с батареи",
+     "message": "Симуляция · выход выше входа больше чем на 20 В."},
+    {"code": "battery_boost_clear", "level": "ok", "group": "Сеть", "title": "Подпитка снята",
+     "message": "Симуляция · выход снова близок ко входу."},
     {"code": "battery_low", "level": "warn", "group": "Батарея", "title": "Батарея садится",
      "message": "Симуляция · низкий заряд батареи."},
     {"code": "battery_low_clear", "level": "ok", "group": "Батарея", "title": "Батарея в норме",
@@ -1107,6 +1112,12 @@ class Monitor:
                 "voltage_state": volt,
                 "voltage_note": voltage_note(volt, settings),
                 "volt_limits": voltage_limits(settings),
+                "battery_boost": battery_boost_active(
+                    reading.get("input_v"),
+                    reading.get("output_v"),
+                    status.on_battery,
+                    bool(self._edges.get("battery_boost")),
+                ),
                 "updated_at": now,
                 "source": source,
             }
@@ -1120,6 +1131,7 @@ class Monitor:
             "soc": reading["battery_pct"],
             "hz": reading["frequency"],
             "temp": reading["temperature"],
+            "boost": bool(reading.get("battery_boost")),
         }
         with self._lock:
             self._reading = reading
@@ -1255,6 +1267,26 @@ class Monitor:
             elif previous and not active:
                 self._event(off_level, code + "_clear", off_text)
         self._voltage_edges(reading)
+        self._boost_edges(reading)
+
+    def _boost_edges(self, reading: dict) -> None:
+        previous = bool(self._edges.get("battery_boost"))
+        active = bool(reading.get("battery_boost"))
+        self._edges["battery_boost"] = active
+        if active and not previous:
+            inn = reading.get("input_v")
+            out = reading.get("output_v")
+            try:
+                delta = float(out) - float(inn)
+            except (TypeError, ValueError):
+                delta = 0.0
+            self._event(
+                "warn",
+                "battery_boost",
+                f"Выход выше входа на {delta:.1f} В — нагрузка подпитывается с батареи",
+            )
+        elif previous and not active:
+            self._event("info", "battery_boost_clear", "Выход снова близок ко входу — подпитка с батареи снята")
 
     def _voltage_edges(self, reading: dict) -> None:
         volts = reading.get("input_v")
@@ -1541,7 +1573,8 @@ def _command_hint(action: str) -> str:
 _TG_EVENT_CODES = {
     "on_battery", "on_battery_clear", "voltage_low", "voltage_low_clear",
     "voltage_high", "voltage_high_clear", "voltage_crit_low", "voltage_crit_low_clear",
-    "voltage_crit_high", "voltage_crit_high_clear", "battery_low", "battery_low_clear",
+    "voltage_crit_high", "voltage_crit_high_clear", "battery_boost", "battery_boost_clear",
+    "battery_low", "battery_low_clear",
     "battery_loose", "battery_loose_clear", "battery_swap", "fault", "fault_clear",
     "link_lost", "link", "pc_shutdown", "pc_off", "pc_reboot", "pc_sleep", "pc_hibernate",
     "startup", "shutdown", "app_restart",

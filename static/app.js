@@ -53,6 +53,8 @@ const ALERT_TITLES = {
   voltage_high_clear: "Сеть в норме",
   voltage_crit_low_clear: "Спад снят",
   voltage_crit_high_clear: "Скачок снят",
+  battery_boost: "Подпитка с батареи",
+  battery_boost_clear: "Подпитка снята",
   startup: "UPS запущен",
   shutdown: "UPS закрыт",
   pc_shutdown: "Выключение ПК",
@@ -100,6 +102,8 @@ const TG_EVENTS = [
     { code: "voltage_crit_low_clear", title: "Спад снят" },
     { code: "voltage_crit_high", title: "Сеть слишком высокая" },
     { code: "voltage_crit_high_clear", title: "Скачок снят" },
+    { code: "battery_boost", title: "Подпитка с батареи" },
+    { code: "battery_boost_clear", title: "Подпитка снята" },
   ]},
   { group: "Батарея", items: [
     { code: "battery_low", title: "Батарея садится" },
@@ -157,6 +161,17 @@ const SPARK_LINES = [
   { key: "hz", color: LINE_COLORS.hz, name: "частота", unit: "Гц" },
   { key: "temp", color: LINE_COLORS.temp, name: "температура", unit: "°C" },
 ];
+
+const BOOST_DELTA = 20;
+
+function pointBoost(point) {
+  if (!point) return false;
+  if (point.boost || point.battery_boost) return true;
+  const inn = point.in != null ? point.in : point.input_v;
+  const out = point.out != null ? point.out : point.output_v;
+  if (inn == null || out == null) return false;
+  return Number(out) - Number(inn) > BOOST_DELTA;
+}
 
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", () => showTab(button.dataset.tab));
@@ -617,7 +632,9 @@ async function saveTelegram(event) {
 }
 
 function defaultEventSound(code) {
-  return !String(code).endsWith("_clear") && code !== "startup";
+  const name = String(code);
+  if (name.startsWith("voltage_") && name.endsWith("_clear")) return true;
+  return !name.endsWith("_clear") && name !== "startup";
 }
 
 function defaultEventTray(code) {
@@ -672,7 +689,10 @@ function renderTelegramEvents(settings) {
     group.items.forEach((item) => {
       const pref = stored[item.code];
       const on = pref ? pref.on !== false : true;
-      const sound = pref ? Boolean(pref.sound) : defaultEventSound(item.code);
+      let sound = pref ? Boolean(pref.sound) : defaultEventSound(item.code);
+      if (on && String(item.code).startsWith("voltage_") && String(item.code).endsWith("_clear")) {
+        sound = true;
+      }
       const tray = pref && "tray" in pref ? Boolean(pref.tray) : defaultEventTray(item.code);
       const sendBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="on"]`);
       const soundBox = document.querySelector(`[data-tg-ev="${item.code}"][data-kind="sound"]`);
@@ -1234,6 +1254,16 @@ function withSim(reading) {
     next.voltage_state = "ok";
     next.voltage_note = "";
     next.avr = false;
+  } else if (code === "battery_boost") {
+    next.input_v = 198;
+    next.output_v = 221;
+    next.battery_boost = true;
+    next.mains_ok = true;
+    next.on_battery = false;
+    next.avr = true;
+  } else if (code === "battery_boost_clear") {
+    next.battery_boost = false;
+    if (next.input_v != null) next.output_v = next.input_v;
   } else if (code === "pc_shutdown") {
     next.on_battery = true;
     next.mains_ok = false;
@@ -1301,6 +1331,8 @@ function paint(reading, snapshot) {
   $("deltaV").textContent = reading.input_v == null || reading.output_v == null
     ? "—"
     : `${reading.output_v - reading.input_v >= 0 ? "+" : ""}${(reading.output_v - reading.input_v).toFixed(1)} В`;
+  const boosting = Boolean(reading.battery_boost) || pointBoost(reading);
+  if ($("deltaV")) $("deltaV").classList.toggle("boost", boosting);
   $("outV").textContent = fixed(reading.output_v, 1);
   if ($("schOutV")) $("schOutV").textContent = reading.output_v == null ? "—" : `${Math.round(reading.output_v)} В`;
   $("loadVal").textContent = load == null ? "—" : Math.round(load);
@@ -1317,6 +1349,12 @@ function paint(reading, snapshot) {
   chip($("factMains"), reading.mains_ok, reading.mains_ok ? "Сеть есть" : "Сети нет", reading.mains_ok ? "on" : "bad");
   chip($("factPath"), true, reading.on_battery ? "Питание от батареи" : "Питание от сети", reading.on_battery ? "warn" : "on");
   chip($("factAvr"), reading.avr, reading.avr ? "AVR держит напряжение" : "AVR не активен", reading.avr ? "warn" : "");
+  chip(
+    $("factBoost"),
+    boosting,
+    boosting ? "Подпитка с батареи" : "Без подпитки с батареи",
+    boosting ? "warn" : "",
+  );
   chip($("factBeep"), reading.beeper, reading.beeper ? "Зуммер включён" : "Зуммер выключен", reading.beeper ? "warn" : "");
   const swap = reading.battery_swap;
   const swapped = Boolean(swap && swap.from != null && swap.to != null);
@@ -1360,6 +1398,7 @@ function paint(reading, snapshot) {
     $("schematic").dataset.sim = simCode || "";
     $("schematic").dataset.volt = voltMark ? volt : "ok";
     $("schematic").dataset.fault = reading.fault ? "1" : "0";
+    $("schematic").dataset.boost = boosting ? "1" : "0";
     $("schematic").dataset.link = simCode === "link_lost" ? "lost" : "ok";
     $("schematic").dataset.off = shutting ? "1" : "0";
     layoutSchemeTraces();
@@ -1369,6 +1408,7 @@ function paint(reading, snapshot) {
       ? "NO LINK"
       : packLoose ? "NO PACK"
         : voltMark ? voltMark
+          : boosting ? "BOOST"
           : onBattery ? "INVERT" : "LINE";
   }
   if ($("schVolt")) {
@@ -1558,6 +1598,13 @@ function refreshSparkNote() {
     temp: reading.temperature,
   };
   node.textContent = sparkLines().map((line) => `${line.name} ${fixed(live[line.key], line.unit === "Вт" || line.unit === "%" ? 0 : 1)} ${line.unit}`).join(" · ");
+  if (reading.battery_boost || pointBoost(reading)) {
+    const inn = reading.input_v;
+    const out = reading.output_v;
+    if (inn != null && out != null) {
+      node.textContent += ` · подпитка +${(out - inn).toFixed(1)} В`;
+    }
+  }
 }
 
 function resetSpark() {
@@ -1833,6 +1880,42 @@ function splitByGap(samples, limit) {
   return groups;
 }
 
+function fillBoostBands(ctx, data, lines, xOf, yOfValue, gap) {
+  const inLine = lines.find((line) => line.key === "in");
+  const outLine = lines.find((line) => line.key === "out");
+  if (!inLine || !outLine) return;
+  const samples = data.filter((point) => point.in != null && point.out != null);
+  splitByGap(samples, gap).forEach((chunk) => {
+    let run = [];
+    const flush = () => {
+      if (run.length < 2) {
+        run = [];
+        return;
+      }
+      ctx.beginPath();
+      run.forEach((point, index) => {
+        const x = xOf(point.t);
+        const y = yOfValue(point.out, outLine.unit);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      for (let i = run.length - 1; i >= 0; i -= 1) {
+        const point = run[i];
+        ctx.lineTo(xOf(point.t), yOfValue(point.in, inLine.unit));
+      }
+      ctx.closePath();
+      ctx.fillStyle = "rgba(224, 176, 106, 0.32)";
+      ctx.fill();
+      run = [];
+    };
+    chunk.forEach((point) => {
+      if (pointBoost(point)) run.push(point);
+      else flush();
+    });
+    flush();
+  });
+}
+
 function strokeSmooth(ctx, pts) {
   if (pts.length < 2) return;
   ctx.beginPath();
@@ -1976,6 +2059,7 @@ function drawLines(canvas, data, lines, options) {
     }
   }
   const gap = Number(options.gap) || 5;
+  fillBoostBands(ctx, data, lines, xOf, yOfValue, gap);
   lines.forEach((line) => {
     const samples = data.filter((point) => point[line.key] != null);
     splitByGap(samples, gap).forEach((chunk) => {
@@ -2095,7 +2179,10 @@ function plotTipHtml(point, lines, unit) {
     const suffix = line.unit || unit || "";
     return `<div><i style="background:${escapeAttr(line.color)}"></i>${escapeHtml(line.name)} <b>${escapeHtml(String(fixed(value, lineDigits(line, unit))))}</b> ${escapeHtml(suffix)}</div>`;
   }).join("");
-  return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}`;
+  const extra = pointBoost(point) && point.in != null && point.out != null
+    ? `<div class="boost">подпитка +${escapeHtml(String((point.out - point.in).toFixed(1)))} В</div>`
+    : "";
+  return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}${extra}`;
 }
 
 function showPlotTip(event, html) {
@@ -2318,6 +2405,7 @@ function alarmKey(reading) {
   if (reading.battery_loose) return "battery_loose";
   if (reading.fault) return "fault";
   if (reading.on_battery) return "on_battery";
+  if (reading.battery_boost) return "battery_boost";
   const volt = reading.voltage_state;
   if (volt && volt !== "ok" && volt !== "idle") return `voltage_${volt}`;
   if (reading.battery_swap && reading.battery_swap.from != null) return "battery_swap";
@@ -2337,6 +2425,18 @@ function alarmPayload(reading) {
       code: "on_battery",
       level: "warn",
       message: `Питание от батареи · разряд ${clock(reading.discharge_seconds || 0)} · осталось ${runtime(reading.runtime_min)}`,
+    };
+  }
+  if (key === "battery_boost") {
+    const inn = reading.input_v;
+    const out = reading.output_v;
+    const delta = inn == null || out == null ? null : out - inn;
+    return {
+      code: "battery_boost",
+      level: "warn",
+      message: delta == null
+        ? "Выход заметно выше входа — нагрузка подпитывается с батареи."
+        : `Выход выше входа на ${delta.toFixed(1)} В — нагрузка подпитывается с батареи.`,
     };
   }
   if (key.startsWith("voltage_")) {
@@ -2490,6 +2590,14 @@ function closeAlert() {
 
 function alertGlyph(code) {
   const stroke = "currentColor";
+  if (code === "battery_boost") {
+    return `<g fill="none" stroke="${stroke}" stroke-width="5" stroke-linejoin="round">
+      <rect x="22" y="48" width="52" height="36" rx="4"/>
+      <rect x="74" y="58" width="8" height="14"/>
+      <path d="M48 18l12 18H36z" fill="${stroke}" stroke="none"/>
+      <path d="M48 36v12"/>
+    </g>`;
+  }
   if (code === "on_battery" || code === "battery_low") {
     return `<g fill="none" stroke="${stroke}" stroke-width="5" stroke-linejoin="round">
       <rect x="22" y="38" width="62" height="44" rx="4"/>

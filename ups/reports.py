@@ -32,6 +32,8 @@ IMPORTANT = {
     "voltage_crit_low_clear",
     "voltage_crit_high",
     "voltage_crit_high_clear",
+    "battery_boost",
+    "battery_boost_clear",
     "pc_shutdown",
     "pc_off",
     "pc_reboot",
