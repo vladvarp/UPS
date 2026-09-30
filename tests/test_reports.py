@@ -52,6 +52,79 @@ class ReportMathTests(unittest.TestCase):
         self.assertNotIn("href=\"http", html)
         self.assertIn("2026-09-27", html)
         self.assertIn("Сеть пропала", html)
+        self.assertIn('type="time"', html)
+        self.assertIn("кВт", html)
+        self.assertIn('id="filterMenu"', html)
+        self.assertIn('hidden', html)
+
+    def test_summary_html_has_date_filters(self):
+        day = reports.assemble_day("2026-09-27", [], [{"t": 1, "level": "info", "code": "on_battery", "message": "Сеть"}])
+        summary = reports.build_summary(Path(tempfile.gettempdir()) / "missing-ups-journal", day)
+        html = reports.render_html(summary)
+        self.assertIn('type="date"', html)
+        self.assertIn("кВт", html)
+        self.assertNotIn("src=\"http", html)
+        self.assertIn("7 дней", html)
+
+    def test_one_kilowatt_for_one_hour_is_one_kwh(self):
+        start = 1_700_000_000.0
+        rows = [(start + index * 60, 50, 0) for index in range(61)]
+        stats = reports.energy_from_samples(rows, 2.0)
+        self.assertAlmostEqual(stats["energyKwh"], 1.0, places=2)
+        self.assertEqual(stats["avgW"], 1000)
+        self.assertEqual(stats["peakW"], 1000)
+        self.assertEqual(stats["energyKwhBattery"], 0)
+
+    def test_battery_energy_is_split_from_mains(self):
+        start = 1_700_000_000.0
+        rows = [(start, 50, 1), (start + 60, 50, 0), (start + 120, 50, 0)]
+        stats = reports.energy_from_samples(rows, 2.0)
+        self.assertAlmostEqual(stats["energyKwh"], 0.033, places=2)
+        self.assertAlmostEqual(stats["energyKwhBattery"], 0.017, places=2)
+        self.assertAlmostEqual(stats["energyKwhMains"], 0.017, places=2)
+
+    def test_energy_does_not_invent_gaps(self):
+        start = 1_700_000_000.0
+        rows = [(start, 50, 0), (start + 3 * 3600, 50, 0)]
+        stats = reports.energy_from_samples(rows, 2.0)
+        self.assertAlmostEqual(stats["energyKwh"], 0.05, places=3)
+
+    def test_day_stats_include_energy(self):
+        start = datetime(2026, 9, 27, 10, 0).timestamp()
+        rows = [
+            (start + index * 60, 220, 220, 50, 26.6, 100, 50, 29, 0)
+            for index in range(61)
+        ]
+        day = reports.assemble_day("2026-09-27", rows, [], kva=2.0)
+        self.assertEqual(day["kva"], 2.0)
+        self.assertAlmostEqual(day["stats"]["energyKwh"], 1.0, places=2)
+        self.assertEqual(day["stats"]["samples"], 61)
+
+    def test_energy_report_decimates_points(self):
+        start = 1_700_000_000.0
+        rows = [(start + index, 20, 0) for index in range(800)]
+        payload = reports.energy_report(rows, 0.7, start, start + 800)
+        self.assertTrue(payload["ok"])
+        self.assertLessEqual(len(payload["points"]), 480)
+        self.assertGreater(payload["energyKwh"], 0)
+
+    def test_old_day_json_gets_energy_from_points(self):
+        points = [{"m": index, "load": 50, "on": 0} for index in range(61)]
+        day = {"date": "2026-09-27", "points": points, "stats": {"samples": 61, "loadAvg": 50}}
+        out = reports.ensure_energy(day, 2.0)
+        self.assertAlmostEqual(out["stats"]["energyKwh"], 1.0, places=2)
+
+    def test_compact_day_without_points_does_not_fake_zero_kwh(self):
+        day = {"date": "2026-09-27", "stats": {"samples": 1400, "loadAvg": 40}}
+        out = reports.ensure_energy(day, 0.7)
+        self.assertIsNone((out.get("stats") or {}).get("energyKwh"))
+
+    def test_ensure_energy_from_raw_rows(self):
+        start = 1_700_000_000.0
+        rows = [(start + index * 60, 50, 0) for index in range(61)]
+        day = {"date": "2026-09-27", "stats": {"loadAvg": 50}}
+        out = reports.ensure_energy(day, 2.0, rows)
+        self.assertAlmostEqual(out["stats"]["energyKwh"], 1.0, places=2)
 
     def test_json_and_template_live_in_the_user_folder(self):
         with tempfile.TemporaryDirectory() as folder:

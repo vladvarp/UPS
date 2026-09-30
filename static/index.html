@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=68">
+  <link rel="stylesheet" href="/app.css?v=70">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -31,6 +31,9 @@
       </button>
       <button type="button" class="tab" data-tab="reports" role="tab" title="Отчёты" aria-label="Отчёты">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v6h6M9 13h8M9 17h6"/></svg>
+      </button>
+      <button type="button" class="tab" data-tab="energy" role="tab" title="Энергия" aria-label="Энергия">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 10-13h-7l0-7z"/></svg>
       </button>
       <button type="button" class="tab" data-tab="device" role="tab" title="Устройство" aria-label="Устройство">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="10" rx="2"/><path d="M8 7V5m8 2V5M8 17v2m8-2v2M4 12H2m20 0h-2"/></svg>
@@ -242,6 +245,91 @@
           <span id="repPath"></span>
         </div>
         <iframe id="repFrame" title="Отчёт UPS"></iframe>
+      </div>
+    </section>
+
+    <section class="view" id="view-energy" data-view="energy">
+      <div class="energy-desk">
+        <div class="energy-bar">
+          <div class="energy-presets">
+            <button type="button" class="on" data-en="today">Сегодня</button>
+            <button type="button" data-en="yesterday">Вчера</button>
+            <button type="button" data-en="24h">24 часа</button>
+            <button type="button" data-en="7d">7 дней</button>
+            <button type="button" data-en="30d">30 дней</button>
+          </div>
+          <div class="energy-period">
+            <button type="button" class="energy-shift" id="enPrev" aria-label="Раньше">‹</button>
+            <button type="button" class="energy-range-btn" id="enRangeBtn" aria-haspopup="dialog" aria-expanded="false">
+              <span id="enRangeLabel">—</span>
+            </button>
+            <button type="button" class="energy-shift" id="enNext" aria-label="Позже">›</button>
+            <div class="energy-pop" id="enPop" hidden>
+              <div class="cal-head">
+                <button type="button" id="calPrev" aria-label="Прошлый месяц">‹</button>
+                <strong id="calTitle"></strong>
+                <button type="button" id="calNext" aria-label="Следующий месяц">›</button>
+              </div>
+              <div class="cal-week" aria-hidden="true"><span>пн</span><span>вт</span><span>ср</span><span>чт</span><span>пт</span><span>сб</span><span>вс</span></div>
+              <div class="cal-grid" id="calGrid"></div>
+              <div class="cal-times">
+                <div class="cal-time">
+                  <span>с</span>
+                  <div class="time-spin" data-which="from">
+                    <button type="button" data-part="h" data-delta="-1">−</button>
+                    <b id="enHFrom">00</b>
+                    <button type="button" data-part="h" data-delta="1">+</button>
+                    <i>:</i>
+                    <button type="button" data-part="m" data-delta="-5">−</button>
+                    <b id="enMFrom">00</b>
+                    <button type="button" data-part="m" data-delta="5">+</button>
+                  </div>
+                </div>
+                <div class="cal-time">
+                  <span>по</span>
+                  <div class="time-spin" data-which="to">
+                    <button type="button" data-part="h" data-delta="-1">−</button>
+                    <b id="enHTo">00</b>
+                    <button type="button" data-part="h" data-delta="1">+</button>
+                    <i>:</i>
+                    <button type="button" data-part="m" data-delta="-5">−</button>
+                    <b id="enMTo">00</b>
+                    <button type="button" data-part="m" data-delta="5">+</button>
+                  </div>
+                </div>
+              </div>
+              <div class="cal-quick">
+                <button type="button" data-quick="start">00:00</button>
+                <button type="button" data-quick="noon">12:00</button>
+                <button type="button" data-quick="now">сейчас</button>
+                <button type="button" data-quick="end">23:59</button>
+              </div>
+              <button type="button" class="cal-done" id="calDone">Готово</button>
+            </div>
+          </div>
+        </div>
+        <section class="metrics energy-kpis" id="enKpis"></section>
+        <div class="energy-body">
+          <article class="card energy-chart">
+            <header>
+              <div>
+                <h2>Мощность, Вт</h2>
+                <p id="enNote">Колёсико — масштаб, перетаскивание — сдвиг, наведение — точное значение.</p>
+              </div>
+              <div class="spark-nav">
+                <button type="button" class="spark-btn" id="enZoomOut" title="Мельче" aria-label="Мельче">−</button>
+                <span id="enZoomLabel"></span>
+                <button type="button" class="spark-btn" id="enZoomIn" title="Крупнее" aria-label="Крупнее">+</button>
+                <button type="button" class="spark-btn accent" id="enZoomReset" hidden>Сброс</button>
+              </div>
+            </header>
+            <canvas id="enChart" height="280"></canvas>
+          </article>
+          <article class="card energy-days">
+            <h2>По дням</h2>
+            <div class="days" id="enDays"></div>
+          </article>
+        </div>
       </div>
     </section>
 
@@ -536,6 +624,6 @@
   </div>
   <div class="toast" id="toast" hidden></div>
   <div class="plot-tip" id="plotTip" hidden></div>
-  <script src="/app.js?v=70"></script>
+  <script src="/app.js?v=72"></script>
 </body>
 </html>

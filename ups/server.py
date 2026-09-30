@@ -161,6 +161,17 @@ def _handler(monitor: Monitor):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if route == "/api/energy":
+                start = (query.get("from") or ["0"])[0] or "0"
+                end = (query.get("to") or ["0"])[0] or "0"
+                try:
+                    start_ts = float(start)
+                    end_ts = float(end)
+                except (TypeError, ValueError):
+                    start_ts = 0.0
+                    end_ts = 0.0
+                self._json(200, monitor.energy(start_ts, end_ts))
+                return
             self._json(404, {"ok": False, "message": "Нет такого запроса"})
 
         def _stream(self) -> None:

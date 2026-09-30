@@ -509,6 +509,47 @@ class Monitor:
             return reports.render_html(self._day_report(stamp))
         return reports.render_html(self._summary_report())
 
+    def energy(self, start: float, end: float) -> dict:
+        now = time.time()
+        try:
+            end_ts = float(end) if end else now
+        except (TypeError, ValueError):
+            end_ts = now
+        try:
+            start_ts = float(start) if start else end_ts - 86400
+        except (TypeError, ValueError):
+            start_ts = end_ts - 86400
+        end_ts = min(end_ts, now + 60)
+        if end_ts <= start_ts:
+            start_ts = end_ts - 3600
+        max_span = 90 * 86400
+        if end_ts - start_ts > max_span:
+            start_ts = end_ts - max_span
+        kva = self._kva()
+        with self._lock:
+            mode = self._mode
+            demo = list(self._demo_points) if mode == "demo" else []
+        if mode == "demo":
+            rows = [
+                (point["t"], point.get("load"), 1 if point.get("on") else 0)
+                for point in demo
+                if start_ts <= point["t"] < end_ts
+            ]
+        else:
+            rows = self._db.execute(
+                """
+                SELECT ts, load_pct, on_battery FROM readings
+                WHERE ts >= ? AND ts < ? AND source = 'live'
+                ORDER BY ts
+                """,
+                (start_ts, end_ts),
+            ).fetchall()
+        return reports.energy_report(rows, kva, start_ts, end_ts)
+
+    def _kva(self) -> float:
+        with self._lock:
+            return reports.normalize_kva(self.settings.get("ups_kva"))
+
     def report_meta(self) -> dict:
         with self._lock:
             settings = dict(self.settings)
@@ -1411,9 +1452,10 @@ class Monitor:
         stamp = reports.today_stamp()
         if not force and stamp == self._journal_day and now - self._journal_at < 60:
             return
+        kva = reports.normalize_kva(settings.get("ups_kva"))
         if self._journal_day and self._journal_day != stamp:
             try:
-                previous = reports.build_day(self._db, self._journal_day)
+                previous = reports.build_day(self._db, self._journal_day, kva)
                 root = reports.resolve_journal_dir(settings.get("journal_dir"))
                 reports.write_day(root, previous)
                 reports.write_summary(root, reports.build_summary(root, previous))
@@ -1422,7 +1464,7 @@ class Monitor:
         self._journal_day = stamp
         self._journal_at = now
         try:
-            day = reports.build_day(self._db, stamp)
+            day = reports.build_day(self._db, stamp, kva)
             root = reports.resolve_journal_dir(settings.get("journal_dir"))
             reports.write_day(root, day)
             reports.write_summary(root, reports.build_summary(root, day))
@@ -1431,22 +1473,33 @@ class Monitor:
 
     def _day_report(self, stamp: str | None = None) -> dict:
         day = reports.parse_day(stamp) or reports.today_stamp()
+        kva = self._kva()
         with self._lock:
             root = reports.resolve_journal_dir(self.settings.get("journal_dir"))
+        self._upgrade_journal_energy(root, kva)
         stored = reports.load_day(root, day)
-        built = reports.build_day(self._db, day)
+        built = reports.build_day(self._db, day, kva)
+        chosen = built
         if stored and len(stored.get("points") or []) >= len(built.get("points") or []):
             if len(stored.get("events") or []) >= len(built.get("events") or []):
-                return stored
-        return built
+                chosen = reports.upgrade_day_energy(self._db, stored, kva)
+                built_stats = built.get("stats") or {}
+                stats = dict(chosen.get("stats") or {})
+                for key in ("energyKwh", "energyKwhBattery", "energyKwhMains", "avgW", "peakW"):
+                    if built_stats.get(key) is not None:
+                        stats[key] = built_stats[key]
+                chosen["stats"] = stats
+        chosen["kva"] = kva
+        return chosen
 
     def _summary_report(self) -> dict:
+        kva = self._kva()
         with self._lock:
             root = reports.resolve_journal_dir(self.settings.get("journal_dir"))
             enabled = bool(self.settings.get("journal_enabled", True))
         extra = None
         try:
-            extra = reports.build_day(self._db, reports.today_stamp())
+            extra = reports.build_day(self._db, reports.today_stamp(), kva)
         except sqlite3.Error:
             extra = None
         if enabled:
@@ -1456,7 +1509,36 @@ class Monitor:
                     reports.write_day(root, extra)
             except OSError:
                 pass
-        return reports.build_summary(root, extra)
+        self._upgrade_journal_energy(root, kva)
+        summary = reports.build_summary(root, extra)
+        summary["kva"] = kva
+        days = [reports.ensure_energy(item, kva) for item in summary.get("days") or []]
+        summary["days"] = days
+        summary["stats"] = reports.summary_stats(days)
+        return summary
+
+    def _upgrade_journal_energy(self, root, kva: float) -> None:
+        changed = False
+        for stamp in reports.list_days(root):
+            stored = reports.load_day(root, stamp)
+            if not stored or not reports.missing_energy(stored.get("stats")):
+                continue
+            try:
+                upgraded = reports.upgrade_day_energy(self._db, stored, kva)
+            except sqlite3.Error:
+                continue
+            if reports.missing_energy(upgraded.get("stats")):
+                continue
+            try:
+                reports.write_day(root, upgraded)
+                changed = True
+            except OSError:
+                continue
+        if changed:
+            try:
+                reports.write_summary(root, reports.build_summary(root))
+            except OSError:
+                return
 
     def _init_db(self) -> None:
         self._db.executescript(

@@ -8,14 +8,14 @@
 :root {
   --bg: #070b10; --card: #0d151c; --line: rgba(77,226,255,.16);
   --text: #e7f6ff; --muted: #7f9aaa; --cyan: #4de2ff; --ok: #3dbe7a;
-  --warn: #e6b15c; --bad: #e15d4c;
+  --warn: #e6b15c; --bad: #e15d4c; --gold: #e0b06a;
   --sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; color-scheme: dark; }
 body {
-  padding: 18px 16px 36px;
+  padding: 16px 14px calc(28px + env(safe-area-inset-bottom));
   color: var(--text);
   font: 15px/1.45 var(--sans);
   background:
@@ -27,18 +27,20 @@ button, input {
   font: inherit; color: inherit;
   appearance: none; -webkit-appearance: none;
 }
-button {
+button, input[type="date"], input[type="time"] {
   background: #0a1218; color: var(--text);
   border: 1px solid var(--line); border-radius: 999px;
-  padding: 8px 14px; cursor: pointer;
+  padding: 8px 14px; min-height: 40px;
 }
+button { cursor: pointer; }
 button.on { background: #13222c; border-color: rgba(77,226,255,.45); color: var(--cyan); }
-.wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 14px; }
-.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: flex-end; }
+input[type="date"], input[type="time"] { color-scheme: dark; min-width: 0; }
+.wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 12px; }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: center; }
 .eyebrow { color: var(--cyan); letter-spacing: .14em; text-transform: uppercase; font-size: 11px; }
-h1 { font-size: clamp(24px, 4vw, 34px); letter-spacing: .04em; }
+h1 { font-size: clamp(22px, 4vw, 34px); letter-spacing: .04em; }
 .when { color: var(--muted); font-size: 13px; margin-top: 4px; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; }
 .card, .kpi, .day {
   position: relative;
   background: var(--card);
@@ -50,12 +52,54 @@ h1 { font-size: clamp(24px, 4vw, 34px); letter-spacing: .04em; }
   content: ""; position: absolute; top: 6px; left: 6px; width: 10px; height: 10px;
   border: 1px solid rgba(77,226,255,.4); border-right: 0; border-bottom: 0;
 }
-.kpi span, .card h2 {
+.kpi span, .card h2, .tools > p {
   color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600;
 }
-.kpi b { display: block; font: 650 26px/1.1 var(--mono); margin-top: 8px; color: var(--cyan); }
+.kpi b { display: block; font: 650 24px/1.1 var(--mono); margin-top: 8px; color: var(--cyan); }
 .kpi small { color: var(--muted); font: 13px var(--sans); }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.menu-wrap { position: relative; flex: none; }
+.menu-btn {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 44px; padding: 8px 14px 8px 12px;
+  text-align: left;
+}
+.menu-btn span { display: grid; gap: 1px; }
+.menu-btn b {
+  font-size: 13px; letter-spacing: .08em; text-transform: uppercase; font-weight: 650;
+}
+.menu-btn small { color: var(--muted); font: 12px/1.3 var(--sans); max-width: 220px; }
+.menu-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; flex: none; }
+.scrim {
+  position: fixed; inset: 0; z-index: 20;
+  background: rgba(4, 8, 12, .55);
+}
+.menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 21;
+  width: min(380px, calc(100vw - 28px));
+  max-height: min(72vh, 640px);
+  overflow: auto;
+  display: grid; gap: 12px;
+  padding: 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(0, 8, 16, .5);
+}
+.menu[hidden], .scrim[hidden] { display: none !important; }
+.menu-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.menu-head strong { font-size: 14px; letter-spacing: .06em; text-transform: uppercase; color: var(--cyan); }
+.menu section { display: grid; gap: 8px; }
+.menu p {
+  color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600;
+}
+.filters, .range-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.range-row label {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--muted); font-size: 12px;
+}
+.hint { color: var(--muted); font-size: 12px; }
 .chart-box { min-height: 220px; }
 canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
 .list { display: grid; gap: 8px; margin-top: 12px; }
@@ -87,8 +131,15 @@ canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
   .split { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; align-items: start; }
 }
 @media (max-width: 640px) {
-  button { min-height: 40px; }
+  button, input[type="date"], input[type="time"] { min-height: 44px; }
   .row { grid-template-columns: 12px 64px 1fr; }
+  .range-row label { width: 100%; }
+  .range-row input { flex: 1; width: 100%; }
+  .menu {
+    position: fixed; left: 12px; right: 12px; top: auto; bottom: 12px;
+    width: auto; max-height: min(78vh, 560px);
+  }
+  .menu-btn small { max-width: 42vw; }
 }
 </style>
 </head>
@@ -100,13 +151,39 @@ canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
       <h1 id="title">Отчёт</h1>
       <p class="when" id="when"></p>
     </div>
-    <div class="filters" id="range"></div>
+    <div class="menu-wrap">
+      <button type="button" class="menu-btn" id="menuBtn" aria-expanded="false" aria-controls="filterMenu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+        <span><b>Фильтры</b><small id="menuSummary">все данные</small></span>
+      </button>
+      <div class="menu" id="filterMenu" hidden>
+        <div class="menu-head">
+          <strong>Фильтры</strong>
+          <button type="button" id="menuClose">Готово</button>
+        </div>
+        <section>
+          <p>Период</p>
+          <div class="filters" id="presets"></div>
+          <div class="range-row" id="custom"></div>
+        </section>
+        <section>
+          <p id="metricLabel">График</p>
+          <div class="filters" id="metrics"></div>
+        </section>
+        <section>
+          <p>События</p>
+          <div class="filters" id="kinds"></div>
+        </section>
+        <section class="hidden" id="flagsBlock">
+          <p>Дни</p>
+          <div class="filters" id="flags"></div>
+        </section>
+        <p class="hint" id="filterHint"></p>
+      </div>
+    </div>
   </header>
+  <div class="scrim" id="scrim" hidden></div>
   <section class="kpis" id="kpis"></section>
-  <section class="card" id="filterCard">
-    <div class="filters" id="metrics"></div>
-    <div class="filters" id="kinds" style="margin-top:10px"></div>
-  </section>
   <section class="split">
     <article class="card chart-box" id="chartCard">
       <h2 id="chartTitle">График</h2>
@@ -128,15 +205,23 @@ const METRICS = [
   ["in", "Вход, В"],
   ["out", "Выход, В"],
   ["load", "Нагрузка, %"],
+  ["loadW", "Нагрузка, Вт"],
+  ["energy", "Энергия, кВт·ч"],
   ["batt", "Батарея, В"],
   ["temp", "Температура"]
 ];
-const RANGES = [
+const DAY_RANGES = [
   ["all", "Сутки"],
   ["0", "00–06"],
   ["6", "06–12"],
   ["12", "12–18"],
   ["18", "18–24"]
+];
+const SUM_RANGES = [
+  ["all", "Все дни"],
+  ["7", "7 дней"],
+  ["30", "30 дней"],
+  ["90", "90 дней"]
 ];
 const KINDS = [
   ["all", "Все"],
@@ -145,7 +230,13 @@ const KINDS = [
   ["battery", "Батарея"],
   ["pc", "ПК"]
 ];
-const state = { metric: "in", range: "all", kind: "all" };
+const DAY_FLAGS = [
+  ["all", "Любые дни"],
+  ["outage", "С отключениями"],
+  ["battery", "На батарее"],
+  ["alert", "С событиями"]
+];
+const state = { metric: "in", range: "all", kind: "all", flag: "all", fromM: 0, toM: 1440, fromDate: "", toDate: "" };
 
 function ready() {
   if (!DATA) {
@@ -156,45 +247,77 @@ function ready() {
   document.getElementById("kind").textContent = isDay ? "Журнал дня" : "Сводка";
   document.getElementById("title").textContent = isDay ? (DATA.date || "День") : "Важные дни";
   document.getElementById("when").textContent = DATA.generated ? ("собрано " + DATA.generated) : "";
-  paintKpis();
   if (isDay) {
-    fillButtons("range", RANGES, "range");
-    fillButtons("metrics", METRICS, "metric");
+    fillButtons("presets", DAY_RANGES, "range");
+    fillCustomDay();
+    fillButtons("metrics", METRICS.filter((item) => item[0] !== "energy"), "metric");
     fillButtons("kinds", KINDS, "kind");
-    draw();
-    paintEvents(DATA.events || []);
+    document.getElementById("filterHint").textContent = "Интервал меняет график, события и киловатт-часы.";
   } else {
-    document.getElementById("filterCard").classList.add("hidden");
-    document.getElementById("chartCard").classList.add("hidden");
+    const days = DATA.days || [];
+    state.fromDate = days[0] ? days[0].date : "";
+    state.toDate = days.length ? days[days.length - 1].date : "";
+    state.metric = "energy";
+    fillButtons("presets", SUM_RANGES, "range");
+    fillCustomSummary();
+    fillButtons("metrics", [["energy", "Энергия, кВт·ч"], ["load", "Нагрузка, %"], ["in", "Вход, В"]], "metric");
+    fillButtons("kinds", KINDS, "kind");
+    document.getElementById("flagsBlock").classList.remove("hidden");
+    fillButtons("flags", DAY_FLAGS, "flag");
     document.getElementById("daysCard").classList.remove("hidden");
-    paintSummaryEvents();
-    paintDays();
+    document.getElementById("filterHint").textContent = "Фильтры работают прямо в этом файле — без сети и без приложения.";
   }
+  refresh();
+  bindMenu();
 }
 
-function paintKpis() {
-  const stats = DATA.stats || {};
-  const items = DATA.kind === "day" ? [
-    ["Вход ср.", num(stats.inAvg), "В"],
-    ["Мин / макс", join(stats.inMin, stats.inMax), "В"],
-    ["Нагрузка", num(stats.loadAvg), "%"],
-    ["Отключения", stats.outages || 0, "раз"],
-    ["На батарее", stats.onBatteryMinutes || 0, "мин"],
-    ["События", stats.events || 0, ""]
-  ] : [
-    ["Дней", stats.days || 0, ""],
-    ["Вход ср.", num(stats.inAvg), "В"],
-    ["Нагрузка ср.", num(stats.loadAvg), "%"],
-    ["Отключения", stats.outages || 0, "раз"],
-    ["На батарее", stats.onBatteryMinutes || 0, "мин"]
-  ];
-  document.getElementById("kpis").innerHTML = items.map(([label, value, unit]) =>
-    `<article class="kpi"><span>${label}</span><b>${value}${unit ? `<small> ${unit}</small>` : ""}</b></article>`
-  ).join("");
+function fillCustomDay() {
+  document.getElementById("custom").innerHTML =
+    '<label>с <input type="time" id="fromT" value="00:00"></label>' +
+    '<label>по <input type="time" id="toT" value="23:59"></label>' +
+    '<button type="button" id="applyRange">Применить</button>';
+  document.getElementById("applyRange").onclick = applyDayTimes;
+  ["fromT", "toT"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", () => { state.range = "custom"; markPreset(); });
+  });
+}
+
+function fillCustomSummary() {
+  document.getElementById("custom").innerHTML =
+    '<label>с <input type="date" id="fromD" value="' + escAttr(state.fromDate) + '"></label>' +
+    '<label>по <input type="date" id="toD" value="' + escAttr(state.toDate) + '"></label>' +
+    '<button type="button" id="applyRange">Применить</button>';
+  document.getElementById("applyRange").onclick = applySummaryDates;
+}
+
+function applyDayTimes() {
+  state.fromM = parseTime(document.getElementById("fromT").value, 0);
+  state.toM = parseTime(document.getElementById("toT").value, 1440);
+  if (state.toM >= 23 * 60 + 59) state.toM = 1440;
+  if (state.toM <= state.fromM) state.toM = 1440;
+  state.range = "custom";
+  markPreset();
+  refresh();
+}
+
+function applySummaryDates() {
+  state.fromDate = document.getElementById("fromD").value || state.fromDate;
+  state.toDate = document.getElementById("toD").value || state.toDate;
+  if (state.toDate && state.fromDate && state.toDate < state.fromDate) {
+    const swap = state.fromDate;
+    state.fromDate = state.toDate;
+    state.toDate = swap;
+    document.getElementById("fromD").value = state.fromDate;
+    document.getElementById("toD").value = state.toDate;
+  }
+  state.range = "custom";
+  markPreset();
+  refresh();
 }
 
 function fillButtons(id, items, key) {
   const box = document.getElementById(id);
+  if (!box) return;
   box.innerHTML = items.map(([value, label]) =>
     `<button type="button" data-key="${key}" data-value="${value}">${label}</button>`
   ).join("");
@@ -203,10 +326,99 @@ function fillButtons(id, items, key) {
     button.onclick = () => {
       state[key] = button.dataset.value;
       box.querySelectorAll("button").forEach((node) => node.classList.toggle("on", node === button));
-      draw();
-      paintEvents(DATA.events || []);
+      if (key === "range") syncRange();
+      refresh();
     };
   });
+}
+
+function markPreset() {
+  document.querySelectorAll("#presets button").forEach((button) => {
+    button.classList.toggle("on", button.dataset.value === state.range);
+  });
+}
+
+function syncRange() {
+  if (DATA.kind === "day") {
+    const [from, to] = rangeMinutes();
+    state.fromM = from;
+    state.toM = to;
+    const fromT = document.getElementById("fromT");
+    const toT = document.getElementById("toT");
+    if (fromT) fromT.value = clock(from);
+    if (toT) toT.value = clock(to >= 1440 ? 1439 : to);
+    return;
+  }
+  const days = DATA.days || [];
+  if (!days.length) return;
+  const last = days[days.length - 1].date;
+  if (state.range === "all") {
+    state.fromDate = days[0].date;
+    state.toDate = last;
+  } else {
+    state.toDate = last;
+    state.fromDate = shiftDate(last, 1 - Number(state.range));
+    if (state.fromDate < days[0].date) state.fromDate = days[0].date;
+  }
+  const fromD = document.getElementById("fromD");
+  const toD = document.getElementById("toD");
+  if (fromD) fromD.value = state.fromDate;
+  if (toD) toD.value = state.toDate;
+}
+
+function refresh() {
+  paintKpis();
+  paintMenuSummary();
+  draw();
+  if (DATA.kind === "day") paintEvents(DATA.events || []);
+  else {
+    paintSummaryEvents();
+    paintDays();
+  }
+}
+
+function bindMenu() {
+  const button = document.getElementById("menuBtn");
+  const close = document.getElementById("menuClose");
+  const scrim = document.getElementById("scrim");
+  button.onclick = () => setMenu(document.getElementById("filterMenu").hidden);
+  close.onclick = () => setMenu(false);
+  scrim.onclick = () => setMenu(false);
+}
+
+function setMenu(open) {
+  document.getElementById("filterMenu").hidden = !open;
+  document.getElementById("scrim").hidden = !open;
+  document.getElementById("menuBtn").classList.toggle("on", open);
+  document.getElementById("menuBtn").setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function paintMenuSummary() {
+  const parts = [];
+  if (DATA.kind === "day") {
+    const range = DAY_RANGES.find((item) => item[0] === state.range);
+    parts.push(state.range === "custom"
+      ? (clock(state.fromM) + "–" + clock(state.toM >= 1440 ? 1439 : state.toM))
+      : ((range && range[1]) || "Сутки"));
+    const metric = METRICS.find((item) => item[0] === state.metric);
+    if (metric) parts.push(metric[1].split(",")[0]);
+    const kind = KINDS.find((item) => item[0] === state.kind);
+    if (kind && state.kind !== "all") parts.push(kind[1]);
+  } else {
+    if (state.range === "custom") {
+      parts.push(((state.fromDate || "").slice(5) || "…") + "–" + ((state.toDate || "").slice(5) || "…"));
+    } else {
+      const range = SUM_RANGES.find((item) => item[0] === state.range);
+      parts.push((range && range[1]) || "Все дни");
+    }
+    const metric = { energy: "Энергия", load: "Нагрузка", in: "Вход" }[state.metric];
+    if (metric) parts.push(metric);
+    const flag = DAY_FLAGS.find((item) => item[0] === state.flag);
+    if (flag && state.flag !== "all") parts.push(flag[1]);
+    const kind = KINDS.find((item) => item[0] === state.kind);
+    if (kind && state.kind !== "all") parts.push(kind[1]);
+  }
+  document.getElementById("menuSummary").textContent = parts.join(" · ");
 }
 
 function filteredPoints() {
@@ -215,9 +427,69 @@ function filteredPoints() {
 }
 
 function rangeMinutes() {
+  if (state.range === "custom") return [state.fromM, state.toM <= state.fromM ? 1440 : state.toM];
   if (state.range === "all") return [0, 1440];
   const start = Number(state.range) * 60;
   return [start, start + 360];
+}
+
+function filteredDays() {
+  return (DATA.days || []).filter((day) => {
+    if (state.fromDate && day.date < state.fromDate) return false;
+    if (state.toDate && day.date > state.toDate) return false;
+    const stats = day.stats || {};
+    if (state.flag === "outage" && !(stats.outages > 0)) return false;
+    if (state.flag === "battery" && !(stats.onBatteryMinutes > 0)) return false;
+    if (state.flag === "alert" && !((day.events || []).length)) return false;
+    return true;
+  });
+}
+
+function paintKpis() {
+  const box = document.getElementById("kpis");
+  if (DATA.kind === "day") {
+    const points = filteredPoints();
+    const events = (DATA.events || []).filter((item) => inDayRange(item.t) && kindMatch(item.code));
+    const energy = (state.range === "all" && DATA.stats && DATA.stats.energyKwh != null)
+      ? {
+          kwh: DATA.stats.energyKwh,
+          avgW: DATA.stats.avgW,
+          peakW: DATA.stats.peakW,
+          onMin: DATA.stats.onBatteryMinutes || 0
+        }
+      : energyOfPoints(points);
+    const ins = nums(points, "in");
+    const loads = nums(points, "load");
+    box.innerHTML = kpiHtml([
+      ["Энергия", fmtKwh(energy.kwh), "кВт·ч"],
+      ["Средняя", energy.avgW == null ? "—" : String(energy.avgW), "Вт"],
+      ["Пик", energy.peakW == null ? "—" : String(energy.peakW), "Вт"],
+      ["Вход", ins.length ? avg(ins).toFixed(1) : "—", "В"],
+      ["Нагрузка", loads.length ? avg(loads).toFixed(1) : "—", "%"],
+      ["На батарее", String(energy.onMin), "мин"],
+      ["Отключения", String(events.filter((item) => item.code === "on_battery").length), "раз"],
+      ["События", String(events.length), ""]
+    ]);
+    return;
+  }
+  const days = filteredDays();
+  const stats = foldDays(days);
+  box.innerHTML = kpiHtml([
+    ["Энергия", fmtKwh(stats.energyKwh), "кВт·ч"],
+    ["С батареи", fmtKwh(stats.energyKwhBattery), "кВт·ч"],
+    ["Дней", String(stats.days), ""],
+    ["Вход ср.", stats.inAvg == null ? "—" : Number(stats.inAvg).toFixed(1), "В"],
+    ["Нагрузка ср.", stats.loadAvg == null ? "—" : Number(stats.loadAvg).toFixed(1), "%"],
+    ["Пик", stats.peakW == null ? "—" : String(Math.round(stats.peakW)), "Вт"],
+    ["Отключения", String(stats.outages), "раз"],
+    ["На батарее", String(stats.onBatteryMinutes), "мин"]
+  ]);
+}
+
+function kpiHtml(items) {
+  return items.map(([label, value, unit]) =>
+    `<article class="kpi"><span>${label}</span><b>${value}${unit ? `<small> ${unit}</small>` : ""}</b></article>`
+  ).join("");
 }
 
 function draw() {
@@ -230,22 +502,27 @@ function draw() {
   canvas.height = Math.round(height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
+  if (DATA.kind === "day") drawDay(ctx, width, height);
+  else drawSummary(ctx, width, height);
+}
+
+function drawDay(ctx, width, height) {
   const points = filteredPoints();
   const key = state.metric;
-  const values = points.map((point) => point[key]).filter((value) => value != null);
+  const series = points.map((point) => metricValue(point, key)).filter((value) => value != null);
   document.getElementById("chartTitle").textContent = (METRICS.find((item) => item[0] === key) || [])[1] || "График";
-  if (!values.length) {
+  if (!series.length) {
     ctx.fillStyle = "#7f9aaa";
     ctx.fillText("Нет точек за этот промежуток", 16, height / 2);
     return;
   }
-  const min = Math.min.apply(null, values);
-  const max = Math.max.apply(null, values);
+  const min = Math.min.apply(null, series);
+  const max = Math.max.apply(null, series);
   const pad = (max - min) * 0.12 || 1;
   const lo = min - pad;
   const hi = max + pad;
   const [from, to] = rangeMinutes();
-  const left = 44, right = 12, top = 12, bottom = 28;
+  const left = 48, right = 12, top = 12, bottom = 28;
   const innerW = width - left - right;
   const innerH = height - top - bottom;
   ctx.strokeStyle = "rgba(77,226,255,.12)";
@@ -254,18 +531,17 @@ function draw() {
   for (let i = 0; i < 4; i++) {
     const y = top + innerH * i / 3;
     ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width - right, y); ctx.stroke();
-    const label = (hi - (hi - lo) * i / 3).toFixed(1);
-    ctx.fillText(label, 4, y + 4);
+    ctx.fillText((hi - (hi - lo) * i / 3).toFixed(key === "loadW" ? 0 : 1), 4, y + 4);
   }
   ctx.beginPath();
   points.forEach((point, index) => {
-    const value = point[key];
+    const value = metricValue(point, key);
     if (value == null) return;
     const x = left + ((point.m - from) / Math.max(1, to - from)) * innerW;
     const y = top + (1 - (value - lo) / (hi - lo)) * innerH;
     if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = "#4de2ff";
+  ctx.strokeStyle = key === "loadW" ? "#ff7a3d" : "#4de2ff";
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.fillStyle = "#7f9aaa";
@@ -273,13 +549,46 @@ function draw() {
   ctx.fillText(clock(to >= 1440 ? 1439 : to), width - 48, height - 8);
 }
 
-function paintEvents(items) {
-  const [from, to] = rangeMinutes();
-  const filtered = items.filter((item) => {
-    const minutes = stampMinutes(item.t);
-    if (minutes < from || minutes >= to) return false;
-    return kindMatch(item.code);
+function drawSummary(ctx, width, height) {
+  const days = filteredDays();
+  const key = state.metric;
+  const values = days.map((day) => summaryValue(day, key));
+  const title = key === "energy" ? "Энергия по дням, кВт·ч" : key === "load" ? "Нагрузка по дням, %" : "Вход по дням, В";
+  document.getElementById("chartTitle").textContent = title;
+  if (!days.length || values.every((value) => value == null)) {
+    ctx.fillStyle = "#7f9aaa";
+    ctx.fillText("Нет дней в выбранном диапазоне", 16, height / 2);
+    return;
+  }
+  const nums = values.filter((value) => value != null);
+  const max = Math.max.apply(null, nums.concat([0.01]));
+  const left = 48, right = 12, top = 12, bottom = 36;
+  const innerW = width - left - right;
+  const innerH = height - top - bottom;
+  ctx.strokeStyle = "rgba(77,226,255,.12)";
+  ctx.fillStyle = "#7f9aaa";
+  ctx.font = "11px Segoe UI, sans-serif";
+  for (let i = 0; i < 4; i++) {
+    const y = top + innerH * i / 3;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width - right, y); ctx.stroke();
+    ctx.fillText((max * (1 - i / 3)).toFixed(key === "energy" ? 2 : 1), 4, y + 4);
+  }
+  const barW = Math.max(4, innerW / Math.max(days.length, 1) * 0.72);
+  days.forEach((day, index) => {
+    const value = values[index];
+    if (value == null) return;
+    const x = left + (index + 0.14) * (innerW / days.length);
+    const h = innerH * (value / max);
+    ctx.fillStyle = key === "energy" ? "rgba(255,122,61,.85)" : "rgba(77,226,255,.8)";
+    ctx.fillRect(x, top + innerH - h, barW, h);
   });
+  ctx.fillStyle = "#7f9aaa";
+  ctx.fillText(days[0].date.slice(5), left, height - 8);
+  ctx.fillText(days[days.length - 1].date.slice(5), width - 52, height - 8);
+}
+
+function paintEvents(items) {
+  const filtered = items.filter((item) => inDayRange(item.t) && kindMatch(item.code));
   const box = document.getElementById("events");
   if (!filtered.length) {
     box.innerHTML = '<p class="empty">Событий нет</p>';
@@ -292,8 +601,10 @@ function paintEvents(items) {
 
 function paintSummaryEvents() {
   const items = [];
-  (DATA.days || []).forEach((day) => {
-    (day.events || []).forEach((item) => items.push({ ...item, date: day.date }));
+  filteredDays().forEach((day) => {
+    (day.events || []).forEach((item) => {
+      if (kindMatch(item.code)) items.push({ ...item, date: day.date });
+    });
   });
   items.sort((a, b) => (b.t || 0) - (a.t || 0));
   const box = document.getElementById("events");
@@ -308,9 +619,9 @@ function paintSummaryEvents() {
 
 function paintDays() {
   const box = document.getElementById("days");
-  const days = (DATA.days || []).slice().reverse();
+  const days = filteredDays().slice().reverse();
   if (!days.length) {
-    box.innerHTML = '<p class="empty">Сводка ещё пустая — журнал только начал писаться.</p>';
+    box.innerHTML = '<p class="empty">В этом диапазоне дней нет.</p>';
     return;
   }
   box.innerHTML = days.map((day) => {
@@ -319,8 +630,8 @@ function paintDays() {
     return `<article class="day">
       <strong>${day.date}</strong>
       <p class="stats">
+        <span>энергия <b>${fmtKwh(s.energyKwh)}</b> кВт·ч</span>
         <span>вход <b>${num(s.inAvg)}</b> В</span>
-        <span>${num(s.inMin)}–${num(s.inMax)}</span>
         <span>нагрузка <b>${num(s.loadAvg)}</b>%</span>
         <span>откл. <b>${s.outages || 0}</b></span>
       </p>
@@ -329,14 +640,77 @@ function paintDays() {
   }).join("");
 }
 
+function metricValue(point, key) {
+  if (key === "loadW") return watts(point.load);
+  return point[key];
+}
+
+function summaryValue(day, key) {
+  const stats = day.stats || {};
+  if (key === "energy") return stats.energyKwh || 0;
+  if (key === "load") return stats.loadAvg;
+  return stats.inAvg;
+}
+
+function energyOfPoints(points) {
+  let kwh = 0, batt = 0, peak = null, onMin = 0, wattsSum = 0, n = 0;
+  points.forEach((point) => {
+    const w = watts(point.load);
+    if (w == null) return;
+    const slice = w / 1000 / 60;
+    kwh += slice;
+    wattsSum += w;
+    n += 1;
+    if ((point.on || 0) >= 0.5) { batt += slice; onMin += 1; }
+    if (peak == null || w > peak) peak = w;
+  });
+  return { kwh, batt, peakW: peak == null ? null : Math.round(peak), avgW: n ? Math.round(wattsSum / n) : null, onMin };
+}
+
+function foldDays(days) {
+  const ins = [];
+  const loads = [];
+  let outages = 0, onMin = 0, energy = 0, batt = 0, peak = null;
+  days.forEach((day) => {
+    const s = day.stats || {};
+    if (s.inAvg != null) ins.push(s.inAvg);
+    if (s.loadAvg != null) loads.push(s.loadAvg);
+    outages += s.outages || 0;
+    onMin += s.onBatteryMinutes || 0;
+    energy += Number(s.energyKwh || 0);
+    batt += Number(s.energyKwhBattery || 0);
+    if (s.peakW != null && (peak == null || s.peakW > peak)) peak = s.peakW;
+  });
+  return {
+    days: days.length,
+    inAvg: ins.length ? avg(ins) : null,
+    loadAvg: loads.length ? avg(loads) : null,
+    outages, onBatteryMinutes: onMin,
+    energyKwh: energy, energyKwhBattery: batt, peakW: peak
+  };
+}
+
+function watts(load) {
+  if (load == null) return null;
+  const kva = Number(DATA.kva || 0.7);
+  return Math.max(0, kva * 10 * Number(load));
+}
+
 function kindMatch(code) {
   const value = state.kind;
   if (value === "all") return true;
-  if (value === "power") return String(code).indexOf("on_battery") === 0 || code === "link_lost" || code === "link";
-  if (value === "voltage") return String(code).indexOf("voltage_") === 0;
-  if (value === "battery") return String(code).indexOf("battery_") === 0;
-  if (value === "pc") return String(code).indexOf("pc_") === 0 || code === "app_restart";
+  const text = String(code || "");
+  if (value === "power") return text.indexOf("on_battery") === 0 || text === "link_lost" || text === "link";
+  if (value === "voltage") return text.indexOf("voltage_") === 0;
+  if (value === "battery") return text.indexOf("battery_") === 0;
+  if (value === "pc") return text.indexOf("pc_") === 0 || text === "app_restart";
   return true;
+}
+
+function inDayRange(ts) {
+  const [from, to] = rangeMinutes();
+  const minutes = stampMinutes(ts);
+  return minutes >= from && minutes < to;
 }
 
 function stampMinutes(ts) {
@@ -348,17 +722,39 @@ function hhmm(ts) {
   return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
 }
 function clock(minutes) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
+  const total = Math.max(0, Math.min(1439, Number(minutes) || 0));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
 }
+function parseTime(value, fallback) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return fallback;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+function shiftDate(stamp, days) {
+  const date = new Date(stamp + "T00:00:00");
+  date.setDate(date.getDate() + days);
+  return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+}
 function num(value) { return value == null || value === "" ? "—" : Number(value).toFixed(1); }
-function join(a, b) { return (a == null && b == null) ? "—" : num(a) + " / " + num(b); }
+function nums(points, key) { return points.map((item) => item[key]).filter((value) => value != null); }
+function avg(values) { return values.reduce((sum, value) => sum + value, 0) / values.length; }
+function fmtKwh(value) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  if (!isFinite(n)) return "—";
+  if (n === 0) return "0";
+  if (n < 0.01) return n.toFixed(3);
+  if (n < 10) return n.toFixed(2);
+  return n.toFixed(1);
+}
 function short(text) { return String(text || "").slice(0, 32); }
 function esc(text) {
   return String(text || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
-window.addEventListener("resize", () => { if (DATA && DATA.kind === "day") draw(); });
+function escAttr(text) { return esc(text).replace(/'/g, "&#39;"); }
+window.addEventListener("resize", () => { if (DATA) draw(); });
 ready();
 </script>
 </body>

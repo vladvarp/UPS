@@ -8,9 +8,13 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ups.protocol import load_watts
+
 TEMPLATE_NAME = "template.html"
 _PACKAGE_TEMPLATE = Path(__file__).with_name("report_template.html")
 _PLACEHOLDER = "/*__UPS_DATA__*/null"
+ENERGY_MAX_GAP = 180.0
+DEFAULT_KVA = 0.7
 
 IMPORTANT = {
     "on_battery",
@@ -105,7 +109,7 @@ def day_json_path(root: Path, stamp: str) -> Path:
     return journal_paths(root)["days"] / f"{stamp}.json"
 
 
-def build_day(conn, stamp: str) -> dict:
+def build_day(conn, stamp: str, kva: float | None = None) -> dict:
     start, end = day_bounds(stamp)
     rows = conn.execute(
         """
@@ -128,10 +132,10 @@ def build_day(conn, stamp: str) -> dict:
             (start, end),
         )
     ]
-    return assemble_day(stamp, rows, events)
+    return assemble_day(stamp, rows, events, kva=kva)
 
 
-def assemble_day(stamp: str, rows, events: list[dict]) -> dict:
+def assemble_day(stamp: str, rows, events: list[dict], kva: float | None = None) -> dict:
     buckets: dict[int, dict] = {}
     for row in rows:
         ts, incoming, outgoing, load, batt, soc, hz, temp, on_batt = row
@@ -208,13 +212,20 @@ def assemble_day(stamp: str, rows, events: list[dict]) -> dict:
                 "on": round(slot["on"] / count, 2),
             }
         )
+    rating = normalize_kva(kva)
+    stats = day_stats(points, events)
+    energy = energy_from_samples(rows, rating)
+    for key, value in energy.items():
+        if key not in {"samples", "hours"}:
+            stats[key] = value
     return {
         "kind": "day",
         "date": stamp,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "kva": rating,
         "points": points,
         "events": [_public_event(item) for item in events],
-        "stats": day_stats(points, events),
+        "stats": stats,
     }
 
 
@@ -294,13 +305,236 @@ def summary_stats(days: list[dict]) -> dict:
     loads = [item["stats"]["loadAvg"] for item in days if (item.get("stats") or {}).get("loadAvg") is not None]
     outages = sum(int((item.get("stats") or {}).get("outages") or 0) for item in days)
     on_min = sum(int((item.get("stats") or {}).get("onBatteryMinutes") or 0) for item in days)
+    energy = [float((item.get("stats") or {}).get("energyKwh") or 0) for item in days]
+    energy_batt = [float((item.get("stats") or {}).get("energyKwhBattery") or 0) for item in days]
+    peaks = [item["stats"]["peakW"] for item in days if (item.get("stats") or {}).get("peakW") is not None]
     return {
         "days": len(days),
         "inAvg": _mean(ins),
         "loadAvg": _mean(loads),
         "outages": outages,
         "onBatteryMinutes": on_min,
+        "energyKwh": round(sum(energy), 3) if days else 0,
+        "energyKwhBattery": round(sum(energy_batt), 3) if days else 0,
+        "peakW": _round(max(peaks) if peaks else None),
     }
+
+
+def normalize_kva(value) -> float:
+    try:
+        kva = float(value)
+    except (TypeError, ValueError):
+        kva = DEFAULT_KVA
+    if kva <= 0:
+        kva = DEFAULT_KVA
+    return max(0.2, min(20.0, kva))
+
+
+def energy_from_samples(rows, kva: float, start: float | None = None, end: float | None = None) -> dict:
+    samples: list[tuple[float, float, bool]] = []
+    rating = normalize_kva(kva)
+    for row in rows or []:
+        parsed = _row_sample(row)
+        if parsed is None:
+            continue
+        ts, load, on_batt = parsed
+        if start is not None and ts < start:
+            continue
+        if end is not None and ts >= end:
+            continue
+        watts = load_watts(load, rating)
+        if watts is None:
+            continue
+        samples.append((ts, float(watts), on_batt))
+    return _energy_of(samples, start, end)
+
+
+def energy_from_points(points: list[dict], kva: float) -> dict:
+    samples: list[tuple[float, float, bool]] = []
+    rating = normalize_kva(kva)
+    for index, point in enumerate(points or []):
+        watts = load_watts(point.get("load"), rating)
+        if watts is None:
+            continue
+        minute = int(point.get("m") or index)
+        samples.append((float(minute * 60), float(watts), (point.get("on") or 0) >= 0.5))
+    return _energy_of(samples, None, None, gap=90.0)
+
+
+def ensure_energy(day: dict, kva: float | None = None, rows=None) -> dict:
+    data = dict(day or {})
+    rating = normalize_kva(kva if kva is not None else data.get("kva"))
+    data["kva"] = rating
+    stats = dict(data.get("stats") or {})
+    if stats.get("energyKwh") is not None:
+        data["stats"] = stats
+        return data
+    extra = None
+    if rows:
+        extra = energy_from_samples(rows, rating)
+    elif data.get("points"):
+        extra = energy_from_points(data.get("points") or [], rating)
+    if extra and extra.get("samples"):
+        for key, value in extra.items():
+            if key not in {"samples", "hours"}:
+                stats[key] = value
+        data["stats"] = stats
+    return data
+
+
+def missing_energy(stats) -> bool:
+    return (stats or {}).get("energyKwh") is None
+
+
+def energy_rows(conn, stamp: str):
+    start, end = day_bounds(stamp)
+    return conn.execute(
+        """
+        SELECT ts, load_pct, on_battery FROM readings
+        WHERE ts >= ? AND ts < ? AND source = 'live'
+        ORDER BY ts
+        """,
+        (start, end),
+    ).fetchall()
+
+
+def upgrade_day_energy(conn, day: dict, kva: float | None = None) -> dict:
+    data = dict(day or {})
+    rating = normalize_kva(kva if kva is not None else data.get("kva"))
+    if not missing_energy(data.get("stats")):
+        data["kva"] = rating
+        return data
+    stamp = parse_day(data.get("date"))
+    rows = energy_rows(conn, stamp) if conn is not None and stamp else None
+    upgraded = ensure_energy(data, rating, rows)
+    if missing_energy(upgraded.get("stats")) and stamp and conn is not None:
+        built = build_day(conn, stamp, rating)
+        if not missing_energy(built.get("stats")):
+            return built
+    return upgraded
+
+
+def energy_report(rows, kva: float, start: float, end: float) -> dict:
+    rating = normalize_kva(kva)
+    lo = float(start)
+    hi = float(end)
+    stats = energy_from_samples(rows, rating, lo, hi)
+    by_day: dict[str, list] = {}
+    chart: list[tuple[float, float, bool]] = []
+    for row in rows or []:
+        parsed = _row_sample(row)
+        if parsed is None:
+            continue
+        ts, load, on_batt = parsed
+        if ts < lo or ts >= hi:
+            continue
+        watts = load_watts(load, rating)
+        if watts is None:
+            continue
+        chart.append((ts, float(watts), on_batt))
+        stamp = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+        by_day.setdefault(stamp, []).append((ts, load, on_batt))
+    days = []
+    for stamp in sorted(by_day):
+        day_start, day_end = day_bounds(stamp)
+        item = energy_from_samples(by_day[stamp], rating, max(day_start, lo), min(day_end, hi))
+        days.append({"date": stamp, **item})
+    return {
+        "ok": True,
+        "from": lo,
+        "to": hi,
+        "kva": rating,
+        **stats,
+        "points": _chart_points(chart),
+        "days": days,
+    }
+
+
+def _energy_of(
+    samples: list[tuple[float, float, bool]],
+    start: float | None,
+    end: float | None,
+    gap: float = ENERGY_MAX_GAP,
+) -> dict:
+    energy = 0.0
+    energy_batt = 0.0
+    counted = 0.0
+    on_sec = 0.0
+    peak = None
+    for ts, watts, on_batt in samples:
+        if peak is None or watts > peak:
+            peak = watts
+    for index in range(1, len(samples)):
+        t0, w0, on0 = samples[index - 1]
+        t1, w1, _on1 = samples[index]
+        dt = t1 - t0
+        if dt <= 0:
+            continue
+        dt = min(dt, gap)
+        hours = dt / 3600.0
+        slice_kwh = ((w0 + w1) / 2.0) * hours / 1000.0
+        energy += slice_kwh
+        counted += dt
+        if on0:
+            energy_batt += slice_kwh
+            on_sec += dt
+    wall = 0.0
+    if start is not None and end is not None and end > start:
+        wall = end - start
+    elif len(samples) >= 2:
+        wall = samples[-1][0] - samples[0][0]
+    avg = None
+    if counted > 0:
+        avg = energy * 1000.0 / (counted / 3600.0)
+    elif samples:
+        avg = sum(item[1] for item in samples) / len(samples)
+    return {
+        "energyKwh": round(energy, 3),
+        "energyKwhBattery": round(energy_batt, 3),
+        "energyKwhMains": round(max(0.0, energy - energy_batt), 3),
+        "avgW": round(avg) if avg is not None else None,
+        "peakW": round(peak) if peak is not None else None,
+        "hours": round(wall / 3600.0, 2) if wall else 0,
+        "samples": len(samples),
+        "onBatteryMinutes": int(round(on_sec / 60.0)),
+    }
+
+
+def _row_sample(row) -> tuple[float, object, bool] | None:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        ts = row.get("t", row.get("ts"))
+        if ts is None:
+            return None
+        load = row.get("load", row.get("load_pct"))
+        on_batt = row.get("on", row.get("on_battery"))
+        return float(ts), load, bool(on_batt)
+    seq = tuple(row)
+    if len(seq) >= 9:
+        return float(seq[0]), seq[3], bool(seq[8])
+    if len(seq) >= 3:
+        return float(seq[0]), seq[1], bool(seq[2])
+    if len(seq) >= 2:
+        return float(seq[0]), seq[1], False
+    return None
+
+
+def _chart_points(samples: list[tuple[float, float, bool]], limit: int = 480) -> list[dict]:
+    if len(samples) <= limit:
+        return [{"t": ts, "w": round(watts), "on": int(on_batt)} for ts, watts, on_batt in samples]
+    t0 = samples[0][0]
+    span = max(1e-3, samples[-1][0] - t0)
+    buckets: dict[int, tuple[float, float, bool]] = {}
+    for ts, watts, on_batt in samples:
+        idx = min(limit - 1, int((ts - t0) / span * (limit - 1)))
+        prev = buckets.get(idx)
+        if prev is None or watts > prev[1]:
+            buckets[idx] = (ts, watts, on_batt)
+    return [
+        {"t": ts, "w": round(watts), "on": int(on_batt)}
+        for ts, watts, on_batt in (buckets[idx] for idx in sorted(buckets))
+    ]
 
 
 def list_days(root: Path) -> list[str]:

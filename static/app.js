@@ -23,6 +23,14 @@ let sessionIn = { min: null, max: null };
 let reportKind = "summary";
 let reportDays = [];
 let reportDate = "";
+let energyPreset = "today";
+let energyData = null;
+let energyRange = null;
+let energyView = { t0: 0, t1: 0 };
+let energyHoverX = null;
+let energyDrag = null;
+let energyCal = { month: new Date(), focus: "from" };
+let energyDay = "";
 let alertReady = false;
 let lastEventT = 0;
 let lastAlarmKey = "";
@@ -213,6 +221,43 @@ $("repDate").addEventListener("change", () => {
   reportDate = $("repDate").value.trim();
   setReportKind("day");
 });
+document.querySelectorAll("[data-en]").forEach((button) => {
+  button.addEventListener("click", () => setEnergyPreset(button.dataset.en));
+});
+$("enPrev").addEventListener("click", () => shiftEnergy(-1));
+$("enNext").addEventListener("click", () => shiftEnergy(1));
+$("enRangeBtn").addEventListener("click", toggleEnergyPop);
+$("calPrev").addEventListener("click", () => shiftCalMonth(-1));
+$("calNext").addEventListener("click", () => shiftCalMonth(1));
+$("calDone").addEventListener("click", () => closeEnergyPop(true));
+$("calGrid").addEventListener("click", onCalDayClick);
+document.querySelectorAll(".time-spin button").forEach((button) => {
+  button.addEventListener("click", () => spinEnergyTime(button.closest("[data-which]").dataset.which, button.dataset.part, Number(button.dataset.delta)));
+});
+document.querySelectorAll(".cal-quick button").forEach((button) => {
+  button.addEventListener("click", () => applyEnergyQuick(button.dataset.quick));
+});
+$("enChart").addEventListener("mousemove", hoverEnergy);
+$("enChart").addEventListener("mouseleave", () => {
+  energyHoverX = null;
+  hidePlotTip();
+  drawEnergyChart();
+});
+$("enChart").addEventListener("wheel", onEnergyWheel, { passive: false });
+$("enChart").addEventListener("pointerdown", onEnergyDown);
+$("enChart").addEventListener("dblclick", resetEnergyView);
+$("enZoomIn").addEventListener("click", () => zoomEnergy(1 / 1.35));
+$("enZoomOut").addEventListener("click", () => zoomEnergy(1.35));
+$("enZoomReset").addEventListener("click", resetEnergyView);
+$("enDays").addEventListener("click", onEnergyDayClick);
+document.addEventListener("pointerdown", (event) => {
+  const pop = $("enPop");
+  if (!pop || pop.hidden) return;
+  if (pop.contains(event.target) || $("enRangeBtn").contains(event.target) || $("enPrev").contains(event.target) || $("enNext").contains(event.target)) return;
+  closeEnergyPop(true);
+});
+window.addEventListener("pointermove", onEnergyMove);
+window.addEventListener("pointerup", onEnergyUp);
 $("tgClear").addEventListener("click", () => telegramAction("telegram_clear"));
 $("tgCopyPair").addEventListener("click", copyPairCommand);
 $("quitTray").addEventListener("click", () => sendQuit("tray"));
@@ -356,6 +401,7 @@ window.addEventListener("resize", () => {
   drawChart();
   drawSpark();
   layoutSchemeTraces();
+  if (document.querySelector("#view-energy.on")) drawEnergyChart();
 });
 requestAnimationFrame(layoutSchemeTraces);
 document.addEventListener("pointerdown", () => {
@@ -399,12 +445,13 @@ async function pull() {
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("on", tab.dataset.tab === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("on", view.dataset.view === name));
-  document.querySelector("main").classList.toggle("fill", name === "reports" || name === "telegram");
+  document.querySelector("main").classList.toggle("fill", name === "reports" || name === "telegram" || name === "energy");
   if (name !== "overview" && name !== "chart") hidePlotTip();
   if (name === "chart") drawChart();
   if (name === "log") loadEvents();
   if (name === "telegram") fillTelegramFields();
   if (name === "reports") loadReport();
+  if (name === "energy") loadEnergy();
 }
 
 let historyReloadTimer = 0;
@@ -2336,6 +2383,555 @@ async function loadReport(force) {
 async function openReportFolder() {
   const data = await fetch("/api/reports/open-folder", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((item) => item.json()).catch(() => ({}));
   toast(data.message || "Папка журнала");
+}
+
+function setEnergyPreset(preset) {
+  energyPreset = preset || "today";
+  energyDay = "";
+  markEnergyPreset();
+  energyRange = energyWindow(energyPreset);
+  closeEnergyPop(false);
+  loadEnergy(true);
+}
+
+function markEnergyPreset() {
+  document.querySelectorAll("[data-en]").forEach((button) => {
+    button.classList.toggle("on", button.dataset.en === energyPreset);
+  });
+}
+
+function energyWindow(preset) {
+  const now = new Date();
+  let start = new Date(now);
+  let end = new Date(now);
+  if (preset === "yesterday") {
+    start.setDate(start.getDate() - 1);
+    start.setHours(0, 0, 0, 0);
+    end = new Date(start);
+    end.setDate(end.getDate() + 1);
+  } else if (preset === "24h") {
+    start = new Date(now.getTime() - 24 * 3600 * 1000);
+  } else if (preset === "7d") {
+    start = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+  } else if (preset === "30d") {
+    start = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+  } else {
+    start.setHours(0, 0, 0, 0);
+  }
+  return { from: start, to: end };
+}
+
+function ensureEnergyRange() {
+  if (!energyRange) energyRange = energyWindow(energyPreset);
+  return energyRange;
+}
+
+function shiftEnergy(dir) {
+  const range = ensureEnergyRange();
+  const span = Math.max(60 * 1000, range.to.getTime() - range.from.getTime());
+  const from = new Date(range.from.getTime() + dir * span);
+  const to = new Date(range.to.getTime() + dir * span);
+  const now = Date.now();
+  if (to.getTime() > now + 120000) {
+    energyRange = { from: new Date(now - span), to: new Date(now) };
+  } else {
+    energyRange = { from, to };
+  }
+  energyPreset = "custom";
+  energyDay = "";
+  markEnergyPreset();
+  loadEnergy(true);
+}
+
+function formatEnergyStamp(date, withTime) {
+  const months = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+  const pad = (value) => String(value).padStart(2, "0");
+  const day = `${date.getDate()} ${months[date.getMonth()]}`;
+  if (!withTime) return day;
+  return `${day}, ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function paintEnergyRange() {
+  const range = ensureEnergyRange();
+  const same = range.from.toDateString() === range.to.toDateString();
+  $("enRangeLabel").textContent = same
+    ? `${formatEnergyStamp(range.from, true)} — ${pad2(range.to.getHours())}:${pad2(range.to.getMinutes())}`
+    : `${formatEnergyStamp(range.from, true)} — ${formatEnergyStamp(range.to, true)}`;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function stampDay(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function parseStamp(stamp) {
+  const parts = String(stamp || "").split("-").map(Number);
+  if (parts.length !== 3 || parts.some((item) => !item)) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function toggleEnergyPop() {
+  const pop = $("enPop");
+  if (!pop.hidden) {
+    closeEnergyPop(true);
+    return;
+  }
+  const range = ensureEnergyRange();
+  energyCal.month = new Date(range.from.getFullYear(), range.from.getMonth(), 1);
+  energyCal.focus = "from";
+  pop.hidden = false;
+  $("enRangeBtn").classList.add("on");
+  $("enRangeBtn").setAttribute("aria-expanded", "true");
+  paintCalendar();
+}
+
+function closeEnergyPop(apply) {
+  const pop = $("enPop");
+  if (pop) pop.hidden = true;
+  if ($("enRangeBtn")) {
+    $("enRangeBtn").classList.remove("on");
+    $("enRangeBtn").setAttribute("aria-expanded", "false");
+  }
+  if (apply) {
+    energyPreset = "custom";
+    markEnergyPreset();
+    loadEnergy(true);
+  }
+}
+
+function shiftCalMonth(dir) {
+  energyCal.month = new Date(energyCal.month.getFullYear(), energyCal.month.getMonth() + dir, 1);
+  paintCalendar();
+}
+
+function paintCalendar() {
+  const range = ensureEnergyRange();
+  const year = energyCal.month.getFullYear();
+  const month = energyCal.month.getMonth();
+  const names = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+  $("calTitle").textContent = `${names[month]} ${year}`;
+  $("enHFrom").textContent = pad2(range.from.getHours());
+  $("enMFrom").textContent = pad2(range.from.getMinutes());
+  $("enHTo").textContent = pad2(range.to.getHours());
+  $("enMTo").textContent = pad2(range.to.getMinutes());
+  const first = new Date(year, month, 1);
+  let weekday = first.getDay() - 1;
+  if (weekday < 0) weekday = 6;
+  const start = new Date(year, month, 1 - weekday);
+  const today = stampDay(new Date());
+  const fromStamp = stampDay(range.from);
+  const toStamp = stampDay(range.to);
+  const nodes = [];
+  for (let index = 0; index < 42; index++) {
+    const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index);
+    const stamp = stampDay(date);
+    const classes = [];
+    if (date.getMonth() !== month) classes.push("mute");
+    if (stamp === today) classes.push("today");
+    if (stamp === fromStamp || stamp === toStamp) classes.push("edge");
+    else if (stamp > fromStamp && stamp < toStamp) classes.push("in");
+    const future = date.setHours(0, 0, 0, 0) > Date.now();
+    nodes.push(`<button type="button" data-stamp="${stamp}" class="${classes.join(" ")}" ${future ? "disabled" : ""}>${date.getDate()}</button>`);
+  }
+  $("calGrid").innerHTML = nodes.join("");
+  paintEnergyRange();
+}
+
+function onCalDayClick(event) {
+  const button = event.target.closest("button[data-stamp]");
+  if (!button || button.disabled) return;
+  const picked = parseStamp(button.dataset.stamp);
+  if (!picked) return;
+  const range = ensureEnergyRange();
+  const fromDay = stampDay(range.from);
+  const pickedDay = stampDay(picked);
+  if (energyCal.focus === "to" && pickedDay >= fromDay) {
+    range.to = joinDateTime(picked, range.to);
+    energyCal.focus = "from";
+  } else {
+    range.from = joinDateTime(picked, range.from);
+    if (stampDay(range.to) < pickedDay) range.to = joinDateTime(picked, range.to);
+    energyCal.focus = "to";
+  }
+  if (range.to.getTime() <= range.from.getTime()) {
+    range.to = new Date(range.from.getTime() + 60 * 60 * 1000);
+  }
+  energyRange = range;
+  energyPreset = "custom";
+  energyDay = "";
+  markEnergyPreset();
+  paintCalendar();
+}
+
+function joinDateTime(date, timeSource) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), timeSource.getHours(), timeSource.getMinutes(), 0, 0);
+}
+
+function spinEnergyTime(which, part, delta) {
+  const range = ensureEnergyRange();
+  const date = which === "to" ? range.to : range.from;
+  energyCal.focus = which;
+  if (part === "h") date.setHours(date.getHours() + delta);
+  else {
+    const minutes = date.getMinutes() + delta;
+    date.setMinutes(Math.round(minutes / 5) * 5);
+  }
+  if (range.to.getTime() <= range.from.getTime()) {
+    if (which === "to") range.to = new Date(range.from.getTime() + 5 * 60 * 1000);
+    else range.from = new Date(range.to.getTime() - 5 * 60 * 1000);
+  }
+  energyRange = range;
+  energyPreset = "custom";
+  markEnergyPreset();
+  paintCalendar();
+}
+
+function applyEnergyQuick(kind) {
+  const range = ensureEnergyRange();
+  const now = new Date();
+  const target = energyCal.focus === "to" ? range.to : range.from;
+  if (kind === "start") target.setHours(0, 0, 0, 0);
+  else if (kind === "noon") target.setHours(12, 0, 0, 0);
+  else if (kind === "end") target.setHours(23, 59, 0, 0);
+  else {
+    target.setHours(now.getHours(), now.getMinutes(), 0, 0);
+  }
+  if (range.to.getTime() <= range.from.getTime()) {
+    range.to = new Date(range.from.getTime() + 60 * 60 * 1000);
+  }
+  energyRange = range;
+  energyPreset = "custom";
+  markEnergyPreset();
+  paintCalendar();
+}
+
+async function loadEnergy(force) {
+  const range = ensureEnergyRange();
+  paintEnergyRange();
+  const from = Math.floor(Math.min(range.from.getTime(), range.to.getTime()) / 1000);
+  const to = Math.floor(Math.max(range.from.getTime(), range.to.getTime()) / 1000);
+  const data = await fetch(`/api/energy?from=${from}&to=${to}&t=${force ? Date.now() : ""}`).then((item) => item.json()).catch(() => null);
+  energyData = data && data.ok !== false ? data : { energyKwh: 0, points: [], days: [] };
+  const points = energyData.points || [];
+  energyView = {
+    t0: points.length ? points[0].t : from,
+    t1: points.length ? points[points.length - 1].t : to,
+  };
+  paintEnergy();
+}
+
+function paintEnergy() {
+  const data = energyData || {};
+  const items = [
+    ["Энергия", fmtKwh(data.energyKwh), "кВт·ч"],
+    ["С сети", fmtKwh(data.energyKwhMains), "кВт·ч"],
+    ["С батареи", fmtKwh(data.energyKwhBattery), "кВт·ч"],
+    ["Средняя", data.avgW == null ? "—" : String(data.avgW), "Вт"],
+    ["Пик", data.peakW == null ? "—" : String(data.peakW), "Вт"],
+    ["На батарее", String(data.onBatteryMinutes || 0), "мин"],
+  ];
+  $("enKpis").innerHTML = items.map(([label, value, unit]) =>
+    `<article><h3>${label}</h3><p>${value}<small>${unit}</small></p></article>`
+  ).join("");
+  const days = data.days || [];
+  const maxKwh = Math.max.apply(null, days.map((day) => Number(day.energyKwh) || 0).concat([0.01]));
+  $("enDays").innerHTML = days.length
+    ? days.slice().reverse().map((day) => {
+      const width = Math.max(4, Math.round((Number(day.energyKwh) || 0) / maxKwh * 100));
+      const on = energyDay === day.date ? " on" : "";
+      return `
+        <button type="button" class="energy-day${on}" data-date="${day.date}">
+          <div class="energy-day-top"><strong>${formatEnergyStamp(parseStamp(day.date) || new Date(), false)}</strong><b>${fmtKwh(day.energyKwh)} кВт·ч</b></div>
+          <div class="energy-day-line"><i style="width:${width}%"></i></div>
+          <p>средняя ${day.avgW == null ? "—" : day.avgW} Вт · пик ${day.peakW == null ? "—" : day.peakW} Вт</p>
+        </button>`;
+    }).join("")
+    : `<p class="empty">За этот период замеров нет.</p>`;
+  drawEnergyChart();
+}
+
+function onEnergyDayClick(event) {
+  const button = event.target.closest(".energy-day");
+  if (!button) return;
+  const date = parseStamp(button.dataset.date);
+  if (!date) return;
+  energyDay = button.dataset.date;
+  energyPreset = "custom";
+  markEnergyPreset();
+  energyRange = {
+    from: new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0),
+    to: new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0),
+  };
+  loadEnergy(true);
+}
+
+function visibleEnergyPoints() {
+  const points = (energyData && energyData.points) || [];
+  const t0 = energyView.t0;
+  const t1 = energyView.t1;
+  const visible = points.filter((point) => point.t >= t0 && point.t <= t1);
+  if (visible.length) return visible;
+  return points;
+}
+
+function energySpan() {
+  const points = (energyData && energyData.points) || [];
+  if (!points.length) {
+    const range = ensureEnergyRange();
+    return { t0: range.from.getTime() / 1000, t1: range.to.getTime() / 1000 };
+  }
+  return { t0: points[0].t, t1: points[points.length - 1].t };
+}
+
+function zoomEnergy(factor, anchor) {
+  const span = energySpan();
+  const width = Math.max(60, energyView.t1 - energyView.t0);
+  const next = Math.min(span.t1 - span.t0, Math.max(15 * 60, width * factor));
+  const pivot = anchor == null ? (energyView.t0 + energyView.t1) / 2 : anchor;
+  let t0 = pivot - (pivot - energyView.t0) / width * next;
+  let t1 = t0 + next;
+  if (t0 < span.t0) {
+    t0 = span.t0;
+    t1 = t0 + next;
+  }
+  if (t1 > span.t1) {
+    t1 = span.t1;
+    t0 = Math.max(span.t0, t1 - next);
+  }
+  energyView = { t0, t1 };
+  drawEnergyChart();
+}
+
+function resetEnergyView() {
+  const span = energySpan();
+  energyView = { t0: span.t0, t1: span.t1 };
+  drawEnergyChart();
+}
+
+function onEnergyWheel(event) {
+  event.preventDefault();
+  const canvas = $("enChart");
+  const plot = canvas && canvas._plot;
+  const rect = canvas.getBoundingClientRect();
+  let anchor = (energyView.t0 + energyView.t1) / 2;
+  if (plot) {
+    const frac = Math.min(1, Math.max(0, (event.clientX - rect.left - plot.left) / Math.max(1, plot.plotW)));
+    anchor = plot.t0 + frac * (plot.t1 - plot.t0);
+  }
+  zoomEnergy(event.deltaY > 0 ? 1.18 : 1 / 1.18, anchor);
+}
+
+function onEnergyDown(event) {
+  const canvas = $("enChart");
+  const plot = canvas && canvas._plot;
+  if (!plot) return;
+  canvas.setPointerCapture(event.pointerId);
+  const card = canvas.closest(".energy-chart");
+  if (card) card.classList.add("grabbing");
+  hidePlotTip();
+  energyDrag = {
+    x: event.clientX,
+    t0: energyView.t0,
+    t1: energyView.t1,
+    plotW: plot.plotW,
+  };
+}
+
+function onEnergyMove(event) {
+  if (!energyDrag) return;
+  const width = energyDrag.t1 - energyDrag.t0;
+  const dt = ((energyDrag.x - event.clientX) / Math.max(1, energyDrag.plotW)) * width;
+  const span = energySpan();
+  let t0 = energyDrag.t0 + dt;
+  let t1 = energyDrag.t1 + dt;
+  if (t0 < span.t0) {
+    t0 = span.t0;
+    t1 = t0 + width;
+  }
+  if (t1 > span.t1) {
+    t1 = span.t1;
+    t0 = t1 - width;
+  }
+  energyView = { t0, t1 };
+  drawEnergyChart();
+}
+
+function onEnergyUp() {
+  if (!energyDrag) return;
+  energyDrag = null;
+  const card = $("enChart") && $("enChart").closest(".energy-chart");
+  if (card) card.classList.remove("grabbing");
+}
+
+function hoverEnergy(event) {
+  if (energyDrag) return;
+  const canvas = $("enChart");
+  const plot = canvas && canvas._plot;
+  if (!plot) return;
+  const rect = canvas.getBoundingClientRect();
+  energyHoverX = event.clientX - rect.left;
+  const point = nearestPoint(plot, energyHoverX);
+  if (point) {
+    const kwh = energyAt(point.t);
+    showPlotTip(event, `<strong>${escapeHtml(clockTime(point.t))}</strong>
+      <div><i style="background:#ff7a3d"></i>Мощность <b>${escapeHtml(String(point.w))}</b> Вт</div>
+      <div><i style="background:#e0b06a"></i>С начала <b>${escapeHtml(fmtKwh(kwh))}</b> кВт·ч</div>
+      ${point.on ? '<div class="boost">на батарее</div>' : ""}`);
+    $("enNote").textContent = `${clockTime(point.t)}  ·  ${point.w} Вт${point.on ? "  ·  батарея" : ""}`;
+  }
+  drawEnergyChart();
+}
+
+function energyAt(ts) {
+  const points = visibleEnergyPoints();
+  if (!points.length) return 0;
+  let kwh = 0;
+  for (let index = 1; index < points.length; index++) {
+    const prev = points[index - 1];
+    const next = points[index];
+    if (prev.t > ts) break;
+    const t1 = Math.min(next.t, ts);
+    const dt = t1 - prev.t;
+    if (dt <= 0) continue;
+    const w1 = prev.w;
+    const w2 = t1 === next.t ? next.w : prev.w;
+    kwh += ((w1 + w2) / 2) * dt / 3600 / 1000;
+    if (next.t >= ts) break;
+  }
+  return kwh;
+}
+
+function drawEnergyChart() {
+  const canvas = $("enChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 320;
+  const height = canvas.clientHeight || 220;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const all = energySpan();
+  const zoomed = Math.abs((energyView.t1 - energyView.t0) - (all.t1 - all.t0)) > 30;
+  if ($("enZoomReset")) $("enZoomReset").hidden = !zoomed;
+  if ($("enZoomLabel")) $("enZoomLabel").textContent = fmtHours((energyView.t1 - energyView.t0) / 3600);
+  const points = visibleEnergyPoints();
+  if (!points.length) {
+    canvas._plot = null;
+    ctx.fillStyle = "#7f9aaa";
+    ctx.font = "14px Segoe UI, sans-serif";
+    ctx.fillText("Нет точек за этот период", 16, height / 2);
+    return;
+  }
+  const values = points.map((point) => Number(point.w) || 0);
+  const max = Math.max.apply(null, values.concat([1]));
+  const t0 = energyView.t0;
+  const t1 = Math.max(t0 + 1, energyView.t1);
+  const left = 48, right = 12, top = 12, bottom = 28;
+  const innerW = width - left - right;
+  const innerH = height - top - bottom;
+  const xOf = (ts) => left + ((ts - t0) / (t1 - t0)) * innerW;
+  const yOf = (watts) => top + (1 - (Number(watts) || 0) / max) * innerH;
+  ctx.strokeStyle = "rgba(77,226,255,.12)";
+  ctx.fillStyle = "#7f9aaa";
+  ctx.font = "11px Segoe UI, sans-serif";
+  for (let i = 0; i < 4; i++) {
+    const y = top + innerH * i / 3;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width - right, y); ctx.stroke();
+    ctx.fillText(String(Math.round(max * (1 - i / 3))), 4, y + 4);
+  }
+  let batt = false;
+  ctx.fillStyle = "rgba(224,176,106,.16)";
+  points.forEach((point, index) => {
+    if (!point.on) {
+      batt = false;
+      return;
+    }
+    const x = xOf(point.t);
+    const next = points[index + 1];
+    const x2 = next ? xOf(next.t) : x + 2;
+    if (!batt) {
+      ctx.beginPath();
+      ctx.moveTo(x, top + innerH);
+      batt = true;
+    }
+    ctx.lineTo(x, yOf(point.w));
+    if (!next || !next.on) {
+      ctx.lineTo(x2, top + innerH);
+      ctx.closePath();
+      ctx.fill();
+      batt = false;
+    }
+  });
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const x = xOf(point.t);
+    const y = yOf(point.w);
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#ff7a3d";
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255,122,61,.14)";
+  ctx.lineTo(xOf(points[points.length - 1].t), top + innerH);
+  ctx.lineTo(xOf(points[0].t), top + innerH);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#7f9aaa";
+  const mid = (t0 + t1) / 2;
+  const long = (t1 - t0) > 36 * 3600;
+  const label = (ts) => {
+    const date = new Date(ts * 1000);
+    return long ? `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}` : clockTime(ts);
+  };
+  ctx.fillText(label(t0), left, height - 8);
+  ctx.fillText(label(mid), left + innerW / 2 - 28, height - 8);
+  ctx.fillText(label(t1), width - 78, height - 8);
+  if (!energyDrag && energyHoverX == null) {
+    $("enNote").textContent = (energyData && energyData.kva)
+      ? `нагрузка ИБП · ${Number(energyData.kva).toFixed(1)} кВА · ${fmtHours(energyData.hours)} · колёсико и перетаскивание`
+      : "Колёсико — масштаб, перетаскивание — сдвиг, наведение — точное значение.";
+  }
+  const plot = {
+    data: points,
+    lines: [{ key: "w", name: "Мощность", color: "#ff7a3d", unit: "Вт" }],
+    min: 0,
+    max,
+    left,
+    pad: top,
+    plotW: innerW,
+    plotH: innerH,
+    t0,
+    t1,
+    unit: "Вт",
+    xOf,
+    yOf: (value) => yOf(value),
+  };
+  canvas._plot = plot;
+  if (energyHoverX != null) paintCrosshair(ctx, plot, energyHoverX);
+}
+
+function fmtKwh(value) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  if (n === 0) return "0";
+  if (n < 0.01) return n.toFixed(3);
+  if (n < 10) return n.toFixed(2);
+  return n.toFixed(1);
+}
+
+function fmtHours(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (n < 1) return `${Math.round(n * 60)} мин`;
+  if (n < 48) return `${n.toFixed(1)} ч`;
+  return `${(n / 24).toFixed(1)} сут`;
 }
 
 function beep() {

@@ -307,6 +307,269 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
   background: #070b10;
   color-scheme: dark;
 }
+.energy-desk {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+.energy-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex: none;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  position: relative;
+}
+.energy-presets, .energy-period {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.energy-bar button {
+  border-radius: 999px;
+  padding: 7px 12px;
+  min-height: 34px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.energy-presets button.on,
+.energy-range-btn.on {
+  background: rgba(77, 226, 255, 0.08);
+  border-color: rgba(77, 226, 255, 0.45);
+  color: var(--copper);
+}
+.energy-range-btn {
+  min-width: 240px;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  background: rgba(7, 11, 16, 0.55);
+}
+.energy-shift {
+  min-width: 34px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+.energy-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 8px;
+  width: min(352px, calc(100vw - 28px));
+  z-index: 28;
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(77, 226, 255, 0.06), transparent 40%),
+    #0d151c;
+  border: 1px solid rgba(77, 226, 255, 0.28);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.cal-head strong {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--copper);
+}
+.cal-head button, .cal-done, .cal-quick button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+}
+.cal-week, .cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-week span {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 4px 0 8px;
+}
+.cal-grid button {
+  min-height: 38px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.cal-grid button.mute { color: var(--muted); opacity: 0.45; }
+.cal-grid button.today { box-shadow: inset 0 0 0 1px rgba(77, 226, 255, 0.55); }
+.cal-grid button.in { background: rgba(77, 226, 255, 0.1); }
+.cal-grid button.edge {
+  background: rgba(77, 226, 255, 0.28);
+  border-color: rgba(77, 226, 255, 0.5);
+  color: var(--copper-2);
+}
+.cal-grid button:disabled { opacity: 0.25; }
+.cal-times {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cal-time {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.time-spin {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  color: var(--text);
+}
+.time-spin b {
+  min-width: 28px;
+  text-align: center;
+  font-size: 16px;
+}
+.time-spin i { color: var(--muted); }
+.time-spin button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 14px;
+}
+.cal-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.cal-quick button { color: var(--muted); font-size: 12px; }
+.cal-done {
+  width: 100%;
+  margin-top: 10px;
+  background: rgba(77, 226, 255, 0.1);
+  border-color: rgba(77, 226, 255, 0.4);
+  color: var(--copper);
+}
+.energy-kpis {
+  margin: 0;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.energy-kpis p { font-size: 22px; }
+.energy-kpis small {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--sans);
+}
+.energy-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.7fr);
+  gap: 10px;
+}
+.energy-chart, .energy-days {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px 10px;
+}
+.energy-chart header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  flex: none;
+}
+.energy-chart header h2, .energy-days h2 { margin: 0; }
+.energy-chart header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.energy-chart canvas {
+  flex: 1;
+  min-height: 180px;
+  width: 100%;
+  margin-top: 8px;
+  cursor: crosshair;
+}
+.energy-chart.grabbing canvas { cursor: grabbing; }
+.energy-days .days {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+.energy-day {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(7, 11, 16, 0.45);
+  border: 1px solid var(--line);
+  color: inherit;
+  min-height: 0;
+}
+.energy-day:hover { border-color: rgba(77, 226, 255, 0.35); }
+.energy-day.on {
+  border-color: rgba(77, 226, 255, 0.5);
+  background: rgba(77, 226, 255, 0.08);
+}
+.energy-day-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.energy-day strong { font-size: 15px; }
+.energy-day b { color: var(--copper); font-family: var(--mono); font-size: 14px; }
+.energy-day p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.energy-day-line {
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(77, 226, 255, 0.08);
+  overflow: hidden;
+}
+.energy-day-line i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ff7a3d, #e0b06a);
+  border-radius: 99px;
+}
 #view-overview.on { min-height: 100%; display: flex; flex-direction: column; }
 .dashboard {
   flex: 1;
@@ -2125,6 +2388,10 @@ html.shot .notice-dock { display: none !important; }
   .scheme-hud [data-slot="inv"] { flex-basis: 96px; width: 96px; height: 64px; }
   .alert-card { grid-template-columns: 1fr; }
   .figure { font-size: 48px; }
+  .energy-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .energy-body { grid-template-columns: 1fr; }
+  .energy-chart canvas { min-height: 220px; }
+  .energy-days { max-height: 42vh; }
 }
 @media (max-width: 640px) {
   .metrics, .lamps, .flow, .split, .grid, .tg-grid { grid-template-columns: 1fr; }
@@ -2134,4 +2401,7 @@ html.shot .notice-dock { display: none !important; }
   .notice-dock { bottom: 16px; }
   #repPath { display: none; }
   .report-bar input { width: 108px; }
+  .energy-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .energy-range-btn { min-width: 0; flex: 1; }
+  .energy-pop { left: 8px; right: 8px; width: auto; }
 }
