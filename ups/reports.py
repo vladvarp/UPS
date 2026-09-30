@@ -38,6 +38,8 @@ IMPORTANT = {
     "voltage_crit_high_clear",
     "battery_boost",
     "battery_boost_clear",
+    "battery_buck",
+    "battery_buck_clear",
     "pc_shutdown",
     "pc_off",
     "pc_reboot",

@@ -61,6 +61,14 @@ _VOLTAGE_CLEARS = frozenset({
 })
 
 
+def _event_alias(code: str) -> str:
+    if code == "battery_buck":
+        return "battery_boost"
+    if code == "battery_buck_clear":
+        return "battery_boost_clear"
+    return str(code)
+
+
 def default_event_sound(code: str) -> bool:
     if code in _VOLTAGE_CLEARS:
         return True
@@ -73,6 +81,7 @@ def default_event_tray(code: str) -> bool:
 
 def event_pref(settings: dict | None, code: str) -> tuple[bool, bool]:
     src = settings or {}
+    code = _event_alias(code)
     on, sound = _event_pref_stored(src, code)
     if code in _VOLTAGE_CLEARS and on:
         sound = True
@@ -98,6 +107,7 @@ def _event_pref_stored(src: dict, code: str) -> tuple[bool, bool]:
 
 def tray_pref(settings: dict | None, code: str) -> bool:
     src = settings or {}
+    code = _event_alias(code)
     item = (src.get("telegram_events") or {}).get(code)
     if isinstance(item, dict) and "tray" in item:
         return bool(item.get("tray"))
@@ -243,6 +253,7 @@ def chat_can(chat: dict | None, action: str) -> bool:
 
 
 def chat_event_on(chat: dict | None, code: str) -> bool:
+    code = _event_alias(code)
     if not chat_has_event_rules(chat):
         return True
     if code in {"report", "day_report"}:
@@ -254,6 +265,7 @@ def chat_event_on(chat: dict | None, code: str) -> bool:
 
 
 def chat_event_sound(settings: dict | None, chat: dict | None, code: str) -> bool:
+    code = _event_alias(code)
     if chat_has_event_rules(chat):
         item = clean_guest_events(chat.get("events")).get(code) or {}
         return bool(item.get("on") and item.get("sound"))
@@ -261,6 +273,7 @@ def chat_event_sound(settings: dict | None, chat: dict | None, code: str) -> boo
 
 
 def chat_gets_event(settings: dict | None, chat: dict | None, code: str, force: bool = False) -> bool:
+    code = _event_alias(code)
     if chat_has_event_rules(chat):
         return chat_event_on(chat, code)
     if force:
@@ -1299,10 +1312,16 @@ def status_lines(reading: dict) -> list[str]:
     if reading.get("battery_boost"):
         inn = reading.get("input_v")
         out = reading.get("output_v")
+        direction = reading.get("stabilizer_dir")
         try:
-            lines.append(f"Стабилизатор: выход выше входа на {float(out) - float(inn):.1f} В")
+            delta = float(out) - float(inn)
+            mag = abs(delta)
+            if direction == "down" or delta < 0:
+                lines.append(f"Стабилизатор: вход выше выхода на {mag:.1f} В")
+            else:
+                lines.append(f"Стабилизатор: выход выше входа на {mag:.1f} В")
         except (TypeError, ValueError):
-            lines.append("Стабилизатор поднимает напряжение")
+            lines.append("Стабилизатор держит напряжение")
     if reading.get("battery_loose"):
         lines.append("Батареи: напряжение скачет, похоже отключены")
     swap = reading.get("battery_swap")

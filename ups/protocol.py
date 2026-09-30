@@ -185,29 +185,32 @@ def battery_percent(
 ) -> float | None:
     """Charge percent from pack voltage.
 
-    On mains, a battery sitting near its float voltage is full. 26.6 V on a
-    2×12 V string with a 13.5 V full point is what UPSmart showed as 100%.
+    On mains the charger holds a 12 V cell near float (13.5 V → 27–27.9 V on
+    a 2S pack). That band is 100%. After mains drops, the same full pack sits
+    near nominal 12 V/cell (24 V on 2S) — that is 100% on inverter, not 80%.
     """
     if pack_v is None or series <= 0 or full_v <= eod_v:
         return None
     each = pack_v / series
     if each < 4:
         return _clamp((each - 1.75) / (2.27 - 1.75) * 100)
-    # On mains the charger holds a 12 V battery near 13 V. UPSmart shows
-    # that as 100%, including 26.4 V on this 24 V pack.
-    if not on_battery and each >= full_v - 0.8:
-        return 100.0
     if not on_battery:
+        if each >= full_v:
+            return 100.0
         return _clamp((each - eod_v) / (full_v - eod_v) * 100)
+    rest_full = 12.0
+    if rest_full <= eod_v:
+        return _clamp((each - eod_v) / (full_v - eod_v) * 100)
+    if each >= rest_full:
+        return 100.0
     curve = (
         (eod_v, 0),
-        (11.2, 8),
-        (11.6, 25),
-        (11.9, 45),
-        (12.15, 60),
-        (12.4, 78),
-        (12.6, 90),
-        (12.85, 100),
+        (eod_v + (rest_full - eod_v) * 0.2, 12),
+        (eod_v + (rest_full - eod_v) * 0.4, 32),
+        (eod_v + (rest_full - eod_v) * 0.55, 52),
+        (eod_v + (rest_full - eod_v) * 0.72, 74),
+        (eod_v + (rest_full - eod_v) * 0.88, 90),
+        (rest_full, 100),
     )
     return _clamp(_interp(each, curve))
 
@@ -319,16 +322,32 @@ def mains_voltage_active(code: str, volts, on_battery: bool, previous: bool, lim
 
 
 def battery_boost_active(input_v, output_v, on_battery: bool, previous: bool = False) -> bool:
-    """True when the AVR/stabilizer has lifted output more than 20 V above mains."""
+    """True when AVR lifts or bucks output more than 20 V relative to mains."""
     if not mains_present(input_v, on_battery):
         return False
-    try:
-        delta = float(output_v) - float(input_v)
-    except (TypeError, ValueError):
+    delta = stabilizer_delta(input_v, output_v)
+    if delta is None:
         return False
+    mag = abs(delta)
     trigger = BOOST_DELTA
     clear = BOOST_DELTA - BOOST_HYST
-    return delta > trigger if not previous else delta > clear
+    return mag > trigger if not previous else mag > clear
+
+
+def stabilizer_delta(input_v, output_v):
+    try:
+        return float(output_v) - float(input_v)
+    except (TypeError, ValueError):
+        return None
+
+
+def stabilizer_dir(input_v, output_v, on_battery: bool, previous: bool = False) -> str | None:
+    if not battery_boost_active(input_v, output_v, on_battery, previous):
+        return None
+    delta = stabilizer_delta(input_v, output_v)
+    if delta is None:
+        return None
+    return "up" if delta >= 0 else "down"
 
 
 def _limit_num(value, fallback: float) -> float:

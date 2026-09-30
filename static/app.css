@@ -1105,6 +1105,20 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
 }
 .schematic .path-stab.trace i,
 .schematic .path-stab.trace b { display: none; }
+.schematic[data-mode="mains"][data-boost="1"] .path-mains.trace.ac[data-slot="ac-a"] {
+  opacity: 0.18;
+  filter: saturate(0.3);
+}
+.schematic[data-mode="mains"][data-boost="1"] .path-mains.trace.ac[data-slot="ac-a"] i,
+.schematic[data-mode="mains"][data-boost="1"] .path-mains.trace.ac[data-slot="ac-a"] b {
+  display: none;
+  animation: none;
+  opacity: 0;
+}
+.schematic[data-mode="mains"][data-boost="1"] .path-mains.trace.ac[data-slot="ac-a"] .beam {
+  background: linear-gradient(90deg, transparent 0%, rgba(77, 226, 255, 0.12) 50%, transparent 100%);
+  box-shadow: none;
+}
 .schematic[data-mode="mains"][data-boost="1"] .path-mains.trace.vert[data-slot="drop"] .beam {
   background: linear-gradient(180deg, transparent 0%, rgba(224, 176, 106, 0.45) 10%, #ffe7b0 50%, rgba(224, 176, 106, 0.45) 90%, transparent 100%);
   box-shadow:

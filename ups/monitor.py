@@ -23,6 +23,7 @@ from ups.protocol import (
     mains_present,
     mains_voltage_active,
     battery_boost_active,
+    stabilizer_dir,
     mode_label,
     voltage_limits,
     voltage_note,
@@ -150,6 +151,10 @@ SIMULATIONS = (
     {"code": "battery_boost", "level": "warn", "group": "Сеть", "title": "Стабилизатор",
      "message": "Симуляция · стабилизатор поднял выход больше чем на 20 В относительно входа."},
     {"code": "battery_boost_clear", "level": "ok", "group": "Сеть", "title": "Стабилизатор отпустил",
+     "message": "Симуляция · выход снова близок ко входу."},
+    {"code": "battery_buck", "level": "warn", "group": "Сеть", "title": "Стабилизатор (понижение)",
+     "message": "Симуляция · стабилизатор понизил выход больше чем на 20 В относительно входа."},
+    {"code": "battery_buck_clear", "level": "ok", "group": "Сеть", "title": "Стабилизатор отпустил",
      "message": "Симуляция · выход снова близок ко входу."},
     {"code": "battery_low", "level": "warn", "group": "Батарея", "title": "Батарея садится",
      "message": "Симуляция · низкий заряд батареи."},
@@ -1114,9 +1119,6 @@ class Monitor:
             float(settings["full_voltage"]),
             float(settings["eod_voltage"]),
         )
-        if source == "live" and self._battery_level is not None and now - self._battery_level_at < 30:
-            # The UPS reports its own charge level (BL command); trust it over the estimate.
-            percent = float(self._battery_level)
         minutes = runtime_minutes(
             status.load_pct,
             float(settings["battery_ah"]) * groups,
@@ -1132,9 +1134,11 @@ class Monitor:
             discharge = 0
             self._shutdown_held = False
         countdown = self._shutdown_countdown(status.on_battery, settings, now)
-        loose = self._battery_loose(status.battery_v, source == "live")
         mode_changed = bool(self._edges.get("on_battery")) != bool(status.on_battery)
-        swap = None if loose else self._note_pack_swap(source == "live", mode_changed)
+        if mode_changed:
+            self._arm_pack_quiet(now)
+        loose = self._battery_loose(status.battery_v, source == "live")
+        swap = None if loose else self._note_pack_swap(source == "live")
         reading = status.as_dict()
         volt = voltage_state(reading.get("input_v"), status.on_battery, settings)
         reading.update(
@@ -1154,6 +1158,12 @@ class Monitor:
                 "voltage_note": voltage_note(volt, settings),
                 "volt_limits": voltage_limits(settings),
                 "battery_boost": battery_boost_active(
+                    reading.get("input_v"),
+                    reading.get("output_v"),
+                    status.on_battery,
+                    bool(self._edges.get("battery_boost")),
+                ),
+                "stabilizer_dir": stabilizer_dir(
                     reading.get("input_v"),
                     reading.get("output_v"),
                     status.on_battery,
@@ -1255,20 +1265,26 @@ class Monitor:
         subprocess.Popen(["shutdown", "/a"], creationflags=CREATE_NO_WINDOW)
         self._shutdown_sent = False
 
+    def _arm_pack_quiet(self, now: float) -> None:
+        # Float charge vs inverter voltage jumps on transfer. That is not a pack swap
+        # and not a disconnected string — drop the mixed window and wait it out.
+        self._ignore_pack_until = now + 45
+        self._batt_samples = []
+
     def _battery_loose(self, voltage: float | None, live: bool) -> bool:
         if not live or voltage is None:
             return bool(self._edges.get("battery_loose"))
-        if self._live_since and time.time() - self._live_since < 10:
+        now = time.time()
+        if self._live_since and now - self._live_since < 10:
             return False
+        if now < self._ignore_pack_until:
+            return bool(self._edges.get("battery_loose"))
         self._batt_samples.append(float(voltage))
         self._batt_samples = self._batt_samples[-24:]
         return battery_voltage_chaotic(self._batt_samples)
 
-    def _note_pack_swap(self, live: bool, mode_changed: bool) -> dict | None:
+    def _note_pack_swap(self, live: bool) -> dict | None:
         now = time.time()
-        if mode_changed:
-            self._ignore_pack_until = now + 20
-            return self._recent_swap(now)
         if not live or now < self._ignore_pack_until:
             return self._recent_swap(now)
         if self._live_since and now - self._live_since < 12:
@@ -1312,22 +1328,27 @@ class Monitor:
 
     def _boost_edges(self, reading: dict) -> None:
         previous = bool(self._edges.get("battery_boost"))
+        prev_dir = self._edges.get("stabilizer_dir")
         active = bool(reading.get("battery_boost"))
+        direction = reading.get("stabilizer_dir")
         self._edges["battery_boost"] = active
-        if active and not previous:
-            inn = reading.get("input_v")
-            out = reading.get("output_v")
-            try:
-                delta = float(out) - float(inn)
-            except (TypeError, ValueError):
-                delta = 0.0
-            self._event(
-                "warn",
-                "battery_boost",
-                f"Выход выше входа на {delta:.1f} В — сработал стабилизатор",
-            )
+        self._edges["stabilizer_dir"] = direction
+        if active and (not previous or (prev_dir and direction and prev_dir != direction)):
+            self._event("warn", "battery_boost", self._boost_text(reading))
         elif previous and not active:
             self._event("info", "battery_boost_clear", "Выход снова близок ко входу — стабилизатор отпустил")
+
+    def _boost_text(self, reading: dict) -> str:
+        inn = reading.get("input_v")
+        out = reading.get("output_v")
+        try:
+            delta = float(out) - float(inn)
+        except (TypeError, ValueError):
+            return "Сработал стабилизатор напряжения"
+        mag = abs(delta)
+        if delta < 0:
+            return f"Вход выше выхода на {mag:.1f} В — стабилизатор понизил напряжение"
+        return f"Выход выше входа на {mag:.1f} В — стабилизатор поднял напряжение"
 
     def _voltage_edges(self, reading: dict) -> None:
         volts = reading.get("input_v")
@@ -1656,6 +1677,7 @@ _TG_EVENT_CODES = {
     "on_battery", "on_battery_clear", "voltage_low", "voltage_low_clear",
     "voltage_high", "voltage_high_clear", "voltage_crit_low", "voltage_crit_low_clear",
     "voltage_crit_high", "voltage_crit_high_clear", "battery_boost", "battery_boost_clear",
+    "battery_buck", "battery_buck_clear",
     "battery_low", "battery_low_clear",
     "battery_loose", "battery_loose_clear", "battery_swap", "fault", "fault_clear",
     "link_lost", "link", "pc_shutdown", "pc_off", "pc_reboot", "pc_sleep", "pc_hibernate",

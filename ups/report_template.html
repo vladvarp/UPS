@@ -701,8 +701,8 @@ function kindMatch(code) {
   if (value === "all") return true;
   const text = String(code || "");
   if (value === "power") return text.indexOf("on_battery") === 0 || text === "link_lost" || text === "link";
-  if (value === "voltage") return text.indexOf("voltage_") === 0 || text.indexOf("battery_boost") === 0;
-  if (value === "battery") return text.indexOf("battery_") === 0 && text.indexOf("battery_boost") !== 0;
+  if (value === "voltage") return text.indexOf("voltage_") === 0 || text.indexOf("battery_boost") === 0 || text.indexOf("battery_buck") === 0;
+  if (value === "battery") return text.indexOf("battery_") === 0 && text.indexOf("battery_boost") !== 0 && text.indexOf("battery_buck") !== 0;
   if (value === "pc") return text.indexOf("pc_") === 0 || text === "app_restart";
   return true;
 }

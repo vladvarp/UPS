@@ -5,6 +5,7 @@ from ups.monitor import _validate
 from ups.transport import TransportError, probe_serial
 from ups.protocol import (
     battery_boost_active,
+    stabilizer_dir,
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
@@ -54,10 +55,19 @@ class ParseTests(unittest.TestCase):
 
 class BatteryTests(unittest.TestCase):
     def test_float_voltage_is_full(self):
-        # 26.6 V and 26.4 V on 2 batteries: UPSmart shows about 100% on mains.
-        for voltage in (26.6, 26.4):
+        for voltage in (27.0, 27.4, 27.9):
             percent = battery_percent(voltage, 2, on_battery=False, full_v=13.5, eod_v=10.5)
             self.assertEqual(percent, 100, voltage)
+
+    def test_charge_below_float_is_not_full(self):
+        percent = battery_percent(26.4, 2, on_battery=False, full_v=13.5, eod_v=10.5)
+        self.assertLess(percent, 100)
+
+    def test_inverter_nominal_is_full(self):
+        percent = battery_percent(24.0, 2, on_battery=True, full_v=13.5, eod_v=10.5)
+        self.assertEqual(percent, 100)
+        percent = battery_percent(23.0, 2, on_battery=True, full_v=13.5, eod_v=10.5)
+        self.assertLess(percent, 100)
 
     def test_zero_frame_is_rejected(self):
         status = parse_q1("(000.0 000.0 000.0 000 00.0 00.0 00.0 00000000")
@@ -104,6 +114,16 @@ class BatteryTests(unittest.TestCase):
 
     def test_single_spike_is_not_a_swap(self):
         values = [26.6, 26.6, 26.6, 26.5, 26.6, 22.0, 26.6, 26.5, 26.6, 26.6]
+        self.assertIsNone(battery_voltage_stepped(values))
+
+    def test_charger_to_inverter_jump_looks_like_a_step(self):
+        values = [27.2, 27.1, 27.2, 27.2, 27.1, 24.4, 24.3, 24.4, 24.5, 24.4]
+        self.assertFalse(battery_voltage_chaotic(values))
+        self.assertIsNotNone(battery_voltage_stepped(values))
+
+    def test_settled_inverter_voltage_is_not_a_pack_event(self):
+        values = [24.4, 24.3, 24.4, 24.5, 24.4, 24.3, 24.2, 24.3, 24.4, 24.3]
+        self.assertFalse(battery_voltage_chaotic(values))
         self.assertIsNone(battery_voltage_stepped(values))
 
 
@@ -155,6 +175,15 @@ class VoltageAlertTests(unittest.TestCase):
         self.assertFalse(battery_boost_active(200, 214, False, True))
         self.assertFalse(battery_boost_active(None, 230, False, False))
         self.assertFalse(battery_boost_active(0, 220, True, True))
+        self.assertEqual(stabilizer_dir(200, 221, False, False), "up")
+
+    def test_stabilizer_when_input_is_20v_above_output(self):
+        self.assertFalse(battery_boost_active(239, 220, False, False))
+        self.assertTrue(battery_boost_active(248, 221, False, False))
+        self.assertFalse(battery_boost_active(248, 221, True, False))
+        self.assertTrue(battery_boost_active(237, 221, False, True))
+        self.assertFalse(battery_boost_active(235, 221, False, True))
+        self.assertEqual(stabilizer_dir(248, 221, False, False), "down")
 
     def test_voltage_order_is_checked(self):
         clean, error = _validate({"volt_low": 240, "volt_high": 200, "volt_crit_low": 180, "volt_crit_high": 250})

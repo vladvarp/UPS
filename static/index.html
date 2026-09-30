@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=77">
+  <link rel="stylesheet" href="/app.css?v=78">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -490,7 +490,7 @@
         <label>Параллельных групп<input name="battery_groups" type="number" min="1" max="6" step="1"></label>
         <label>Ёмкость одной, А·ч<input name="battery_ah" type="number" min="1" max="300" step="0.1"></label>
         <label>Мощность ИБП, кВА<input name="ups_kva" type="number" min="0.2" max="20000" step="0.01" lang="ru" title="0,72 кВА или 720 ВА"></label>
-        <label>Полный заряд одной, В<input name="full_voltage" type="number" min="12" max="15" step="0.1"></label>
+        <label>Полный заряд одной, В<input name="full_voltage" type="number" min="12" max="15" step="0.1" title="На сети 13,5 В на банку = 27–27,9 В на пакете 24 В. Без сети 100% — 12 В на банку (24 В)."></label>
         <label>Конец разряда одной, В<input name="eod_voltage" type="number" min="9" max="13" step="0.1"></label>
         <label>Состояние батареи, %<input name="battery_health" type="number" min="10" max="100" step="1"></label>
         <label>Низкое напряжение, В<input name="volt_low" type="number" min="80" max="300" step="1"></label>
@@ -630,6 +630,6 @@
   </div>
   <div class="toast" id="toast" hidden></div>
   <div class="plot-tip" id="plotTip" hidden></div>
-  <script src="/app.js?v=77"></script>
+  <script src="/app.js?v=78"></script>
 </body>
 </html>

@@ -63,6 +63,8 @@ const ALERT_TITLES = {
   voltage_crit_high_clear: "Скачок снят",
   battery_boost: "Стабилизатор",
   battery_boost_clear: "Стабилизатор отпустил",
+  battery_buck: "Стабилизатор",
+  battery_buck_clear: "Стабилизатор отпустил",
   startup: "UPS запущен",
   shutdown: "UPS закрыт",
   pc_shutdown: "Выключение ПК",
@@ -172,13 +174,34 @@ const SPARK_LINES = [
 
 const BOOST_DELTA = 20;
 
+function stabilizerDelta(point) {
+  if (!point) return null;
+  const inn = point.in != null ? point.in : point.input_v;
+  const out = point.out != null ? point.out : point.output_v;
+  if (inn == null || out == null) return null;
+  return Number(out) - Number(inn);
+}
+
 function pointBoost(point) {
   if (!point) return false;
   if (point.boost || point.battery_boost) return true;
-  const inn = point.in != null ? point.in : point.input_v;
-  const out = point.out != null ? point.out : point.output_v;
-  if (inn == null || out == null) return false;
-  return Number(out) - Number(inn) > BOOST_DELTA;
+  const delta = stabilizerDelta(point);
+  if (delta == null || Number.isNaN(delta)) return false;
+  return Math.abs(delta) > BOOST_DELTA;
+}
+
+function stabilizerDir(point) {
+  if (point && (point.stabilizer_dir === "up" || point.stabilizer_dir === "down")) {
+    return point.stabilizer_dir;
+  }
+  const delta = stabilizerDelta(point);
+  if (delta == null || Number.isNaN(delta) || !pointBoost(point)) return "";
+  return delta >= 0 ? "up" : "down";
+}
+
+function stabilizerLabel(delta) {
+  const mag = Math.abs(Number(delta)).toFixed(1);
+  return Number(delta) < 0 ? `−${mag}` : `+${mag}`;
 }
 
 document.querySelectorAll(".tab").forEach((button) => {
@@ -1305,11 +1328,21 @@ function withSim(reading) {
     next.input_v = 198;
     next.output_v = 221;
     next.battery_boost = true;
+    next.stabilizer_dir = "up";
     next.mains_ok = true;
     next.on_battery = false;
     next.avr = true;
-  } else if (code === "battery_boost_clear") {
+  } else if (code === "battery_buck") {
+    next.input_v = 248;
+    next.output_v = 221;
+    next.battery_boost = true;
+    next.stabilizer_dir = "down";
+    next.mains_ok = true;
+    next.on_battery = false;
+    next.avr = true;
+  } else if (code === "battery_boost_clear" || code === "battery_buck_clear") {
     next.battery_boost = false;
+    next.stabilizer_dir = "";
     if (next.input_v != null) next.output_v = next.input_v;
   } else if (code === "pc_shutdown") {
     next.on_battery = true;
@@ -1379,6 +1412,7 @@ function paint(reading, snapshot) {
     ? "—"
     : `${reading.output_v - reading.input_v >= 0 ? "+" : ""}${(reading.output_v - reading.input_v).toFixed(1)} В`;
   const boosting = Boolean(reading.battery_boost) || pointBoost(reading);
+  const stabDir = stabilizerDir(reading);
   if ($("deltaV")) $("deltaV").classList.toggle("boost", boosting);
   $("outV").textContent = fixed(reading.output_v, 1);
   if ($("schOutV")) $("schOutV").textContent = reading.output_v == null ? "—" : `${Math.round(reading.output_v)} В`;
@@ -1399,7 +1433,9 @@ function paint(reading, snapshot) {
   chip(
     $("factBoost"),
     boosting,
-    boosting ? "Стабилизатор поднимает напряжение" : "Стабилизатор не поднимает",
+    boosting
+      ? (stabDir === "down" ? "Стабилизатор понижает напряжение" : "Стабилизатор поднимает напряжение")
+      : "Стабилизатор не вмешивается",
     boosting ? "warn" : "",
   );
   chip($("factBeep"), reading.beeper, reading.beeper ? "Зуммер включён" : "Зуммер выключен", reading.beeper ? "warn" : "");
@@ -1648,10 +1684,9 @@ function refreshSparkNote() {
   };
   node.textContent = sparkLines().map((line) => `${line.name} ${fixed(live[line.key], line.unit === "Вт" || line.unit === "%" ? 0 : 1)} ${line.unit}`).join(" · ");
   if (reading.battery_boost || pointBoost(reading)) {
-    const inn = reading.input_v;
-    const out = reading.output_v;
-    if (inn != null && out != null) {
-      node.textContent += ` · стабилизатор +${(out - inn).toFixed(1)} В`;
+    const delta = stabilizerDelta(reading);
+    if (delta != null) {
+      node.textContent += ` · стабилизатор ${stabilizerLabel(delta)} В`;
     }
   }
 }
@@ -2247,7 +2282,7 @@ function plotTipHtml(point, lines, unit) {
     return `<div><i style="background:${escapeAttr(line.color)}"></i>${escapeHtml(line.name)} <b>${escapeHtml(String(fixed(value, lineDigits(line, unit))))}</b> ${escapeHtml(suffix)}</div>`;
   }).join("");
   const extra = pointBoost(point) && point.in != null && point.out != null
-    ? `<div class="boost">стабилизатор +${escapeHtml(String((point.out - point.in).toFixed(1)))} В</div>`
+    ? `<div class="boost">стабилизатор ${escapeHtml(stabilizerLabel(point.out - point.in))} В</div>`
     : "";
   return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}${extra}`;
 }
@@ -3044,15 +3079,16 @@ function alarmPayload(reading) {
     };
   }
   if (key === "battery_boost") {
-    const inn = reading.input_v;
-    const out = reading.output_v;
-    const delta = inn == null || out == null ? null : out - inn;
+    const delta = stabilizerDelta(reading);
+    const dir = stabilizerDir(reading);
     return {
       code: "battery_boost",
       level: "warn",
       message: delta == null
-        ? "Выход заметно выше входа — сработал стабилизатор."
-        : `Выход выше входа на ${delta.toFixed(1)} В — сработал стабилизатор.`,
+        ? "Сработал стабилизатор напряжения."
+        : dir === "down"
+          ? `Вход выше выхода на ${Math.abs(delta).toFixed(1)} В — стабилизатор понизил напряжение.`
+          : `Выход выше входа на ${Math.abs(delta).toFixed(1)} В — стабилизатор поднял напряжение.`,
     };
   }
   if (key.startsWith("voltage_")) {
@@ -3206,12 +3242,14 @@ function closeAlert() {
 
 function alertGlyph(code) {
   const stroke = "currentColor";
-  if (code === "battery_boost") {
+  if (code === "battery_boost" || code === "battery_buck") {
+    const down = code === "battery_buck";
+    const tip = down ? "M60 32l12-16H48z" : "M60 16l12 16H48z";
     return `<g fill="none" stroke="${stroke}" stroke-width="5" stroke-linejoin="round">
       <rect x="28" y="40" width="26" height="44" rx="4"/>
       <rect x="66" y="40" width="26" height="44" rx="4"/>
       <path d="M54 54h12M54 70h12"/>
-      <path d="M60 16l12 16H48z" fill="${stroke}" stroke="none"/>
+      <path d="${tip}" fill="${stroke}" stroke="none"/>
     </g>`;
   }
   if (code === "on_battery" || code === "battery_low") {
