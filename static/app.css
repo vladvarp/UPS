@@ -747,7 +747,7 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
 .scheme-ac,
 .scheme-dc {
   display: grid;
-  grid-template-columns: 114px minmax(16px, 1fr) 128px minmax(16px, 1fr) minmax(110px, 1.4fr) minmax(16px, 1fr) 114px;
+  grid-template-columns: 114px minmax(12px, 0.7fr) 128px minmax(12px, 0.7fr) minmax(180px, 2.6fr) minmax(12px, 0.7fr) 114px;
   align-items: center;
   gap: 0;
 }
@@ -821,7 +821,8 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
   margin: 0;
 }
 .scheme-hud [data-slot="pack"] {
-  min-width: 96px;
+  min-width: 0;
+  width: 100%;
   z-index: 2;
 }
 .scheme-hud [data-slot="drop"],
@@ -892,9 +893,13 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
 }
 .pack-mod {
   min-height: 132px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   align-items: center;
   text-align: center;
   border-color: rgba(224, 176, 106, 0.28);
+  padding: 8px 8px 6px;
 }
 .pack-mod::before, .pack-mod::after { border-color: rgba(224, 176, 106, 0.45); }
 .pack-mod h3 { color: var(--gold); }
@@ -1399,20 +1404,33 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: 100%;
+  min-width: 0;
+  --jar-w: 36px;
+  --jar-h: 62px;
+  --jar-gap: 8px;
+  --cap-w: 18px;
 }
-.string { display: flex; gap: 8px; justify-content: center; }
-.cell { display: flex; flex-direction: column; align-items: center; }
+.string {
+  display: flex;
+  gap: var(--jar-gap);
+  justify-content: center;
+  min-width: 0;
+}
+.cell { display: flex; flex-direction: column; align-items: center; flex: 0 0 auto; }
 .cell-idx { margin: 4px 0 0; color: var(--muted); font-size: 10px; letter-spacing: 0.08em; }
+.pack[data-across="7"] .cell-idx,
+.pack[data-across="8"] .cell-idx { font-size: 8px; letter-spacing: 0.04em; }
 .cap {
-  width: 18px;
+  width: var(--cap-w);
   height: 5px;
   background: var(--copper);
   border-radius: 2px 2px 0 0;
   box-shadow: 0 0 8px rgba(77, 226, 255, 0.35);
 }
 .jar {
-  width: 36px;
-  height: 62px;
+  width: var(--jar-w);
+  height: var(--jar-h);
   border: 1px solid var(--copper);
   border-radius: 3px;
   padding: 3px;
@@ -2476,7 +2494,7 @@ html.shot .notice-dock { display: none !important; }
   .schematic { min-height: 220px; }
   .scheme-ac,
   .scheme-dc {
-    grid-template-columns: 88px minmax(12px, 1fr) 108px minmax(12px, 1fr) minmax(88px, 1.4fr) minmax(12px, 1fr) 88px;
+    grid-template-columns: 88px minmax(8px, 0.6fr) 108px minmax(8px, 0.6fr) minmax(140px, 2.4fr) minmax(8px, 0.6fr) 88px;
   }
   .scheme-hud [data-slot="in"],
   .scheme-hud [data-slot="out"] { width: 84px; height: 84px; }

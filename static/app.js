@@ -1863,6 +1863,20 @@ function syncPackCells(series, groups) {
   if (!pack) return;
   const across = Math.max(1, Math.min(8, Number(series) || 2));
   const down = Math.max(1, Math.min(6, Number(groups) || 1));
+  let jarW = 36;
+  let jarGap = 8;
+  if (across >= 8) { jarW = 20; jarGap = 3; }
+  else if (across >= 7) { jarW = 22; jarGap = 3; }
+  else if (across >= 6) { jarW = 24; jarGap = 4; }
+  else if (across >= 5) { jarW = 28; jarGap = 5; }
+  let jarH = Math.round(jarW * 1.72);
+  if (down >= 3) jarH = Math.min(jarH, 28);
+  else if (down >= 2) jarH = Math.min(jarH, 38);
+  pack.style.setProperty("--jar-w", `${jarW}px`);
+  pack.style.setProperty("--jar-h", `${jarH}px`);
+  pack.style.setProperty("--jar-gap", `${jarGap}px`);
+  pack.style.setProperty("--cap-w", `${Math.max(10, Math.round(jarW * 0.5))}px`);
+  pack.dataset.across = String(across);
   const key = `${across}x${down}`;
   if (pack.dataset.layout === key) return;
   pack.dataset.layout = key;
