@@ -147,7 +147,7 @@ class VoltageAlertTests(unittest.TestCase):
         self.assertFalse(mains_voltage_active("voltage_low", 199, False, False, limits))
         self.assertTrue(mains_voltage_active("voltage_low", 194, False, False, limits))
 
-    def test_battery_boost_when_output_is_20v_above_input(self):
+    def test_stabilizer_when_output_is_20v_above_input(self):
         self.assertFalse(battery_boost_active(220, 239, False, False))
         self.assertTrue(battery_boost_active(200, 221, False, False))
         self.assertFalse(battery_boost_active(220, 241, True, False))

@@ -386,8 +386,8 @@ EVENT_TITLES = {
     "voltage_crit_low_clear": "Спад снят",
     "voltage_crit_high": "Сеть слишком высокая",
     "voltage_crit_high_clear": "Скачок снят",
-    "battery_boost": "Подпитка с батареи",
-    "battery_boost_clear": "Подпитка снята",
+    "battery_boost": "Стабилизатор",
+    "battery_boost_clear": "Стабилизатор отпустил",
     "battery_low": "Батарея садится",
     "battery_low_clear": "Батарея в норме",
     "battery_loose": "Батареи отключены",
@@ -1300,9 +1300,9 @@ def status_lines(reading: dict) -> list[str]:
         inn = reading.get("input_v")
         out = reading.get("output_v")
         try:
-            lines.append(f"Подпитка с батареи: выход выше входа на {float(out) - float(inn):.1f} В")
+            lines.append(f"Стабилизатор: выход выше входа на {float(out) - float(inn):.1f} В")
         except (TypeError, ValueError):
-            lines.append("Подпитка с батареи")
+            lines.append("Стабилизатор поднимает напряжение")
     if reading.get("battery_loose"):
         lines.append("Батареи: напряжение скачет, похоже отключены")
     swap = reading.get("battery_swap")

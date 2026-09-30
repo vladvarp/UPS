@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=70">
+  <link rel="stylesheet" href="/app.css?v=76">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -104,6 +104,7 @@
               <div class="scheme-row scheme-drop"></div>
               <div class="trace ac vert path-mains" data-slot="drop"><span class="beam"></span><b></b><i></i><i></i></div>
               <div class="trace ac vert path-batt" data-slot="rise"><span class="beam"></span><b></b><i></i><i></i></div>
+              <div class="trace dc vert path-stab" data-slot="stab-v"><span class="beam"></span><b></b><i></i><i></i></div>
               <div class="scheme-row scheme-dc">
                 <article class="mod path-mains" data-slot="xfmr">
                   <p class="mod-k">обмотка</p>
@@ -111,6 +112,11 @@
                   <em class="avr">AVR</em>
                 </article>
                 <div class="trace dc path-mains" data-slot="dc-a"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
+                <article class="mod path-mains" data-slot="rect">
+                  <p class="mod-k">AC → DC</p>
+                  <h3>Выпр.</h3>
+                </article>
+                <div class="trace dc path-mains" data-slot="dc-chg"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
                 <article class="mod pack-mod" data-slot="pack">
                   <p class="mod-k">шина</p>
                   <h3>АКБ</h3>
@@ -158,7 +164,7 @@
           <span class="chip" id="factMains">Сеть</span>
           <span class="chip" id="factPath">Путь</span>
           <span class="chip" id="factAvr">AVR</span>
-          <span class="chip" id="factBoost">Подпитка</span>
+          <span class="chip" id="factBoost">Стабилизатор</span>
           <span class="chip" id="factBeep">Зуммер</span>
           <span class="chip" id="factLoose">Батареи</span>
           <span class="chip" id="factRange">Диапазон входа</span>
@@ -624,6 +630,6 @@
   </div>
   <div class="toast" id="toast" hidden></div>
   <div class="plot-tip" id="plotTip" hidden></div>
-  <script src="/app.js?v=72"></script>
+  <script src="/app.js?v=76"></script>
 </body>
 </html>

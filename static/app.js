@@ -61,8 +61,8 @@ const ALERT_TITLES = {
   voltage_high_clear: "Сеть в норме",
   voltage_crit_low_clear: "Спад снят",
   voltage_crit_high_clear: "Скачок снят",
-  battery_boost: "Подпитка с батареи",
-  battery_boost_clear: "Подпитка снята",
+  battery_boost: "Стабилизатор",
+  battery_boost_clear: "Стабилизатор отпустил",
   startup: "UPS запущен",
   shutdown: "UPS закрыт",
   pc_shutdown: "Выключение ПК",
@@ -110,8 +110,8 @@ const TG_EVENTS = [
     { code: "voltage_crit_low_clear", title: "Спад снят" },
     { code: "voltage_crit_high", title: "Сеть слишком высокая" },
     { code: "voltage_crit_high_clear", title: "Скачок снят" },
-    { code: "battery_boost", title: "Подпитка с батареи" },
-    { code: "battery_boost_clear", title: "Подпитка снята" },
+    { code: "battery_boost", title: "Стабилизатор" },
+    { code: "battery_boost_clear", title: "Стабилизатор отпустил" },
   ]},
   { group: "Батарея", items: [
     { code: "battery_low", title: "Батарея садится" },
@@ -1399,7 +1399,7 @@ function paint(reading, snapshot) {
   chip(
     $("factBoost"),
     boosting,
-    boosting ? "Подпитка с батареи" : "Без подпитки с батареи",
+    boosting ? "Стабилизатор поднимает напряжение" : "Стабилизатор не поднимает",
     boosting ? "warn" : "",
   );
   chip($("factBeep"), reading.beeper, reading.beeper ? "Зуммер включён" : "Зуммер выключен", reading.beeper ? "warn" : "");
@@ -1440,7 +1440,7 @@ function paint(reading, snapshot) {
   }[volt] || "";
   if ($("schematic")) {
     $("schematic").dataset.mode = onBattery ? "battery" : "mains";
-    $("schematic").dataset.avr = reading.avr || voltMark ? "1" : "0";
+    $("schematic").dataset.avr = reading.avr || voltMark || boosting ? "1" : "0";
     $("schematic").dataset.pack = packLoose ? "loose" : reading.battery_low ? "low" : "ok";
     $("schematic").dataset.sim = simCode || "";
     $("schematic").dataset.volt = voltMark ? volt : "ok";
@@ -1448,6 +1448,8 @@ function paint(reading, snapshot) {
     $("schematic").dataset.boost = boosting ? "1" : "0";
     $("schematic").dataset.link = simCode === "link_lost" ? "lost" : "ok";
     $("schematic").dataset.off = shutting ? "1" : "0";
+    const bypassTitle = document.querySelector('[data-slot="bypass"] h3');
+    if (bypassTitle) bypassTitle.textContent = boosting ? "Стабилизация" : "Байпас";
     layoutSchemeTraces();
   }
   if ($("schMode")) {
@@ -1455,7 +1457,7 @@ function paint(reading, snapshot) {
       ? "NO LINK"
       : packLoose ? "NO PACK"
         : voltMark ? voltMark
-          : boosting ? "BOOST"
+          : boosting ? "AVR"
           : onBattery ? "INVERT" : "LINE";
   }
   if ($("schVolt")) {
@@ -1649,7 +1651,7 @@ function refreshSparkNote() {
     const inn = reading.input_v;
     const out = reading.output_v;
     if (inn != null && out != null) {
-      node.textContent += ` · подпитка +${(out - inn).toFixed(1)} В`;
+      node.textContent += ` · стабилизатор +${(out - inn).toFixed(1)} В`;
     }
   }
 }
@@ -2010,6 +2012,9 @@ function layoutSchemeTraces() {
   const xfmr = hud.querySelector('[data-slot="xfmr"]');
   const out = hud.querySelector('[data-slot="out"]');
   const inv = hud.querySelector('[data-slot="inv"]');
+  const rect = hud.querySelector('[data-slot="rect"]');
+  const bypass = hud.querySelector('[data-slot="bypass"]');
+  const stabV = hud.querySelector('[data-slot="stab-v"]');
   if (!drop || !rise || !inn || !xfmr || !out || !inv) return;
   const box = hud.getBoundingClientRect();
   const stand = (trace, topEl, botEl) => {
@@ -2024,6 +2029,7 @@ function layoutSchemeTraces() {
   };
   stand(drop, inn, xfmr);
   stand(rise, out, inv);
+  if (rect && bypass && stabV) stand(stabV, bypass, rect);
 }
 
 function drawLines(canvas, data, lines, options) {
@@ -2227,7 +2233,7 @@ function plotTipHtml(point, lines, unit) {
     return `<div><i style="background:${escapeAttr(line.color)}"></i>${escapeHtml(line.name)} <b>${escapeHtml(String(fixed(value, lineDigits(line, unit))))}</b> ${escapeHtml(suffix)}</div>`;
   }).join("");
   const extra = pointBoost(point) && point.in != null && point.out != null
-    ? `<div class="boost">подпитка +${escapeHtml(String((point.out - point.in).toFixed(1)))} В</div>`
+    ? `<div class="boost">стабилизатор +${escapeHtml(String((point.out - point.in).toFixed(1)))} В</div>`
     : "";
   return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}${extra}`;
 }
@@ -3031,8 +3037,8 @@ function alarmPayload(reading) {
       code: "battery_boost",
       level: "warn",
       message: delta == null
-        ? "Выход заметно выше входа — нагрузка подпитывается с батареи."
-        : `Выход выше входа на ${delta.toFixed(1)} В — нагрузка подпитывается с батареи.`,
+        ? "Выход заметно выше входа — сработал стабилизатор."
+        : `Выход выше входа на ${delta.toFixed(1)} В — сработал стабилизатор.`,
     };
   }
   if (key.startsWith("voltage_")) {
@@ -3188,10 +3194,10 @@ function alertGlyph(code) {
   const stroke = "currentColor";
   if (code === "battery_boost") {
     return `<g fill="none" stroke="${stroke}" stroke-width="5" stroke-linejoin="round">
-      <rect x="22" y="48" width="52" height="36" rx="4"/>
-      <rect x="74" y="58" width="8" height="14"/>
-      <path d="M48 18l12 18H36z" fill="${stroke}" stroke="none"/>
-      <path d="M48 36v12"/>
+      <rect x="28" y="40" width="26" height="44" rx="4"/>
+      <rect x="66" y="40" width="26" height="44" rx="4"/>
+      <path d="M54 54h12M54 70h12"/>
+      <path d="M60 16l12 16H48z" fill="${stroke}" stroke="none"/>
     </g>`;
   }
   if (code === "on_battery" || code === "battery_low") {

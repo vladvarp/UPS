@@ -147,9 +147,9 @@ SIMULATIONS = (
      "message": "Симуляция · вход выше критического порога."},
     {"code": "voltage_crit_high_clear", "level": "ok", "group": "Сеть", "title": "Скачок снят",
      "message": "Симуляция · критически высокое напряжение снято."},
-    {"code": "battery_boost", "level": "warn", "group": "Сеть", "title": "Подпитка с батареи",
-     "message": "Симуляция · выход выше входа больше чем на 20 В."},
-    {"code": "battery_boost_clear", "level": "ok", "group": "Сеть", "title": "Подпитка снята",
+    {"code": "battery_boost", "level": "warn", "group": "Сеть", "title": "Стабилизатор",
+     "message": "Симуляция · стабилизатор поднял выход больше чем на 20 В относительно входа."},
+    {"code": "battery_boost_clear", "level": "ok", "group": "Сеть", "title": "Стабилизатор отпустил",
      "message": "Симуляция · выход снова близок ко входу."},
     {"code": "battery_low", "level": "warn", "group": "Батарея", "title": "Батарея садится",
      "message": "Симуляция · низкий заряд батареи."},
@@ -1324,10 +1324,10 @@ class Monitor:
             self._event(
                 "warn",
                 "battery_boost",
-                f"Выход выше входа на {delta:.1f} В — нагрузка подпитывается с батареи",
+                f"Выход выше входа на {delta:.1f} В — сработал стабилизатор",
             )
         elif previous and not active:
-            self._event("info", "battery_boost_clear", "Выход снова близок ко входу — подпитка с батареи снята")
+            self._event("info", "battery_boost_clear", "Выход снова близок ко входу — стабилизатор отпустил")
 
     def _voltage_edges(self, reading: dict) -> None:
         volts = reading.get("input_v")

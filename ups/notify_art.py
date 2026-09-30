@@ -61,8 +61,8 @@ _TITLES = {
     "voltage_crit_low_clear": "Спад снят",
     "voltage_crit_high": "Сеть слишком высокая",
     "voltage_crit_high_clear": "Скачок снят",
-    "battery_boost": "Подпитка с батареи",
-    "battery_boost_clear": "Подпитка снята",
+    "battery_boost": "Стабилизатор",
+    "battery_boost_clear": "Стабилизатор отпустил",
 }
 
 
@@ -231,12 +231,11 @@ def _pc_glyph(draw, code: str, x: int, y: int, size: int, color) -> None:
         line(96, 22, 106, 8)
         return
     if code == "battery_boost":
-        rect(22, 44, 52, 36, 4)
-        rect(74, 56, 8, 12, 0, fill=True)
-        line(34, 62, 42, 62)
-        line(48, 62, 56, 62)
-        draw.polygon([p(48, 18), p(60, 36), p(36, 36)], fill=color)
-        line(48, 36, 48, 44)
+        rect(28, 36, 26, 48, 4)
+        rect(66, 36, 26, 48, 4)
+        line(54, 50, 66, 50)
+        line(54, 70, 66, 70)
+        draw.polygon([p(60, 14), p(72, 32), p(48, 32)], fill=color)
         return
     if code.endswith("_clear"):
         circle(60, 60, 36)

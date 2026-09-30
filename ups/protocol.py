@@ -319,7 +319,7 @@ def mains_voltage_active(code: str, volts, on_battery: bool, previous: bool, lim
 
 
 def battery_boost_active(input_v, output_v, on_battery: bool, previous: bool = False) -> bool:
-    """True when output is fed from the battery while mains is still present."""
+    """True when the AVR/stabilizer has lifted output more than 20 V above mains."""
     if not mains_present(input_v, on_battery):
         return False
     try:
