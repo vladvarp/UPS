@@ -257,6 +257,33 @@ def battery_low_active(
     return each <= low_v
 
 
+CHARGE_REARM = 97.0
+
+
+def charge_recovered(
+    percent: float | None,
+    on_battery: bool,
+    armed: bool,
+    quiet: bool,
+    *,
+    rearm: float = CHARGE_REARM,
+) -> tuple[bool, bool]:
+    """Arm after a dip below 97%; fire once at 100% on mains.
+
+    After mains↔battery the float jump is ignored (`quiet`). Startup at 100%
+    does not fire because armed starts false.
+    """
+    if quiet or percent is None:
+        return armed, False
+    if percent < rearm:
+        return True, False
+    if on_battery:
+        return armed, False
+    if percent >= 100 and armed:
+        return False, True
+    return armed, False
+
+
 def runtime_minutes(
     load_pct: float | None,
     amp_hours: float,

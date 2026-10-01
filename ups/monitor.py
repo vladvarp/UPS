@@ -20,6 +20,7 @@ from ups.protocol import (
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
+    charge_recovered,
     load_watts,
     mains_present,
     mains_voltage_active,
@@ -165,7 +166,7 @@ SIMULATIONS = (
     {"code": "battery_low", "level": "warn", "group": "Батарея", "title": "Батарея садится",
      "message": "Симуляция · низкий заряд батареи."},
     {"code": "battery_low_clear", "level": "ok", "group": "Батарея", "title": "Батарея в норме",
-     "message": "Симуляция · заряд батареи восстановился."},
+     "message": "Симуляция · батарея заряжена до 100%."},
     {"code": "battery_loose", "level": "bad", "group": "Батарея", "title": "Батареи отключены",
      "message": "Симуляция · напряжение пакета скачет, как при обрыве."},
     {"code": "battery_loose_clear", "level": "ok", "group": "Батарея", "title": "Пакет в норме",
@@ -220,6 +221,7 @@ class Monitor:
         self._trace: list[dict] = []
         self._events: list[dict] = []
         self._edges: dict[str, bool] = {}
+        self._charge_armed = False
         self._outage_started: float | None = None
         self._shutdown_at: float | None = None
         self._shutdown_sent = False
@@ -1340,7 +1342,7 @@ class Monitor:
     def _edges_from(self, reading: dict) -> None:
         checks = (
             ("on_battery", reading["on_battery"], "bad", "Сеть пропала, питание от батареи", "info", "Сеть вернулась"),
-            ("battery_low", reading["battery_low"], "bad", "Низкий заряд батареи", "info", "Заряд батареи снова в норме"),
+            ("battery_low", reading["battery_low"], "bad", "Низкий заряд батареи", None, None),
             ("fault", reading["fault"], "bad", "ИБП сообщил об аварии", "info", "Авария снята"),
             ("battery_loose", reading.get("battery_loose"), "bad", "Напряжение батареи скачет — похоже, батареи отключены от ИБП", "info", "Напряжение батареи снова спокойное"),
             ("load_high", reading["load_pct"] >= 80, "warn", f"Высокая нагрузка: {reading['load_pct']:.0f}%", "info", "Нагрузка снизилась"),
@@ -1350,10 +1352,26 @@ class Monitor:
             self._edges[code] = active
             if active and not previous:
                 self._event(on_level, code, on_text)
-            elif previous and not active:
+            elif previous and not active and off_text:
                 self._event(off_level, code + "_clear", off_text)
         self._voltage_edges(reading)
         self._boost_edges(reading)
+        self._charge_full_edges(reading)
+
+    def _charge_full_edges(self, reading: dict) -> None:
+        now = float(reading.get("updated_at") or time.time())
+        quiet = now < self._ignore_pack_until
+        armed, fire = charge_recovered(
+            reading.get("battery_pct"),
+            bool(reading.get("on_battery")),
+            self._charge_armed,
+            quiet,
+        )
+        self._charge_armed = armed
+        if fire:
+            pct = reading.get("battery_pct")
+            text = "Батарея заряжена · 100%" if pct is None else f"Батарея заряжена · {pct:.0f}%"
+            self._event("ok", "battery_low_clear", text)
 
     def _boost_edges(self, reading: dict) -> None:
         previous = bool(self._edges.get("battery_boost"))

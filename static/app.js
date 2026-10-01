@@ -1330,6 +1330,8 @@ function withSim(reading) {
     if (next.battery_wh_full != null) next.battery_wh = Math.round(Number(next.battery_wh_full) * 0.12 * 10) / 10;
   } else if (code === "battery_low_clear") {
     next.battery_low = false;
+    next.battery_pct = 100;
+    if (next.battery_wh_full != null) next.battery_wh = Number(next.battery_wh_full);
   } else if (code === "battery_swap") {
     next.battery_swap = { from: 24.0, to: 27.2 };
   } else if (code === "fault") {

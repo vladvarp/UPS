@@ -10,6 +10,7 @@ from ups.protocol import (
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
+    charge_recovered,
     load_watts,
     mains_voltage_active,
     mode_label,
@@ -93,6 +94,22 @@ class BatteryTests(unittest.TestCase):
         self.assertTrue(battery_low_active(22.6, 2, True, 11.1, True))
         self.assertFalse(battery_low_active(23.1, 2, True, 11.1, True))
         self.assertFalse(battery_low_active(21.0, 2, False, 11.1, True))
+
+    def test_charge_recovered_fires_at_full_after_a_dip(self):
+        armed, fire = charge_recovered(92, False, False, False)
+        self.assertTrue(armed)
+        self.assertFalse(fire)
+        armed, fire = charge_recovered(100, False, True, False)
+        self.assertFalse(armed)
+        self.assertTrue(fire)
+        armed, fire = charge_recovered(100, False, False, False)
+        self.assertFalse(fire)
+        armed, fire = charge_recovered(100, False, True, True)
+        self.assertTrue(armed)
+        self.assertFalse(fire)
+        armed, fire = charge_recovered(90, True, False, False)
+        self.assertTrue(armed)
+        self.assertFalse(fire)
 
     def test_q1_flag_and_low_voltage_validate(self):
         clean, error = _validate({"q1_battery_low": False, "low_voltage": 11.1})
