@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=78">
+  <link rel="stylesheet" href="/app.css?v=82">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -122,6 +122,7 @@
                   <h3>АКБ</h3>
                   <div class="pack" id="battPack"></div>
                   <p class="cell-cap" id="cellCap">—</p>
+                  <p class="cell-wh" id="cellWh">—</p>
                 </article>
                 <div class="trace dc path-batt" data-slot="dc-b"><span class="beam"></span><b></b><i></i><i></i><i></i></div>
                 <article class="mod path-batt" data-slot="inv">
@@ -216,7 +217,6 @@
         <div class="series" id="series">
           <button type="button" class="on" data-series="voltage">Напряжение</button>
           <button type="button" data-series="load">Нагрузка</button>
-          <button type="button" data-series="battery">Батарея</button>
           <button type="button" data-series="charge">Заряд</button>
           <button type="button" data-series="freq">Частота</button>
           <button type="button" data-series="temp">Температура</button>
@@ -481,23 +481,18 @@
   <dialog id="settings">
     <form id="settingsForm">
       <header>
-        <h2>Настройки</h2>
+        <h2 id="settingsTitle">Настройки</h2>
         <button type="button" class="icon" id="closeSettings" aria-label="Закрыть">×</button>
       </header>
-      <div class="grid">
+      <div class="grid" id="settingsMain">
         <label>Интервал опроса, с<input name="poll_seconds" type="number" min="1" max="30" step="1"></label>
-        <label>Батарей в серии<input name="battery_count" type="number" min="1" max="8" step="1"></label>
-        <label>Параллельных групп<input name="battery_groups" type="number" min="1" max="6" step="1"></label>
-        <label>Ёмкость одной, А·ч<input name="battery_ah" type="number" min="1" max="300" step="0.1"></label>
         <label>Мощность ИБП, кВА<input name="ups_kva" type="number" min="0.2" max="20000" step="0.01" lang="ru" title="0,72 кВА или 720 ВА"></label>
-        <label>Полный заряд одной, В<input name="full_voltage" type="number" min="12" max="15" step="0.1" title="На сети 13,5 В на банку = 27–27,9 В на пакете 24 В. Без сети 100% — 12 В на банку (24 В)."></label>
-        <label>Конец разряда одной, В<input name="eod_voltage" type="number" min="9" max="13" step="0.1"></label>
-        <label>Состояние батареи, %<input name="battery_health" type="number" min="10" max="100" step="1"></label>
         <label>Низкое напряжение, В<input name="volt_low" type="number" min="80" max="300" step="1"></label>
         <label>Высокое напряжение, В<input name="volt_high" type="number" min="80" max="300" step="1"></label>
         <label>Сверхнизкое, В<input name="volt_crit_low" type="number" min="80" max="300" step="1"></label>
         <label>Сверхвысокое, В<input name="volt_crit_high" type="number" min="80" max="300" step="1"></label>
         <label class="wide">COM-порт, если кабель последовательный<input name="serial_port" type="text" placeholder="пусто — только USB"></label>
+        <button type="button" class="ghost calib-open" id="openCalibrate">Калибровка батарей</button>
         <label class="check switch">
           <input name="sound" type="checkbox">
           <span></span>
@@ -517,11 +512,30 @@
         <label class="check switch">
           <input name="pc_shutdown" type="checkbox">
           <span></span>
-          <em>Выключать этот компьютер от батареи</em>
+          <em>Выключать ПК, если сеть пропала</em>
         </label>
-        <label>Через, секунд<input name="shutdown_delay" type="number" min="30" max="3600" step="10"></label>
+        <label>Через сколько секунд<input name="shutdown_delay" type="number" min="30" max="3600" step="10" title="Отсчёт начинается, когда ИБП переходит на батарею"></label>
+      </div>
+      <div id="settingsCalibrate" hidden>
+        <p class="lead">Напряжение, ёмкость и ампер-часы одной банки. Галочка Q1 — уведомления о разряде по флагу ИБП. Если выключена — по порогу «садится ниже».</p>
+        <p class="cal-hint" id="calPackHint"></p>
+        <div class="grid">
+          <label>Батарей в серии<input name="battery_count" type="number" min="1" max="8" step="1"></label>
+          <label>Параллельных групп<input name="battery_groups" type="number" min="1" max="6" step="1"></label>
+          <label>Ёмкость одной, А·ч<input name="battery_ah" type="number" min="1" max="300" step="0.1" title="Ампер-часы одной банки. Параллельные группы суммируются."></label>
+          <label>Состояние батареи, %<input name="battery_health" type="number" min="10" max="100" step="1"></label>
+          <label>Полный заряд одной, В<input name="full_voltage" type="number" min="12" max="15" step="0.1" title="На сети 13,5 В на банку = 27–27,9 В на пакете 24 В. Без сети 100% — 12 В на банку (24 В)."></label>
+          <label>Конец разряда одной, В<input name="eod_voltage" type="number" min="9" max="13" step="0.1"></label>
+          <label>Садится ниже, В на банку<input name="low_voltage" type="number" min="9.5" max="13.5" step="0.1" title="Уведомление «батарея садится», если Q1 выключен. Для 2×12 В порог 11,1 В = 22,2 В на пакете."></label>
+          <label class="check switch wide">
+            <input name="q1_battery_low" type="checkbox">
+            <span></span>
+            <em>Флаг Q1 для уведомлений о разряде</em>
+          </label>
+        </div>
       </div>
       <footer>
+        <button type="button" class="ghost" id="backSettings" hidden>К настройкам</button>
         <p id="settingsMsg"></p>
         <button type="submit" class="primary">Сохранить</button>
       </footer>
@@ -630,6 +644,6 @@
   </div>
   <div class="toast" id="toast" hidden></div>
   <div class="plot-tip" id="plotTip" hidden></div>
-  <script src="/app.js?v=78"></script>
+  <script src="/app.js?v=82"></script>
 </body>
 </html>

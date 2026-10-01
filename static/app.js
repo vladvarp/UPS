@@ -94,7 +94,6 @@ const SERIES = {
     ],
   },
   load: { unit: "Вт", lines: [{ key: "load", color: LINE_COLORS.load, name: "нагрузка" }] },
-  battery: { unit: "В", lines: [{ key: "batt", color: LINE_COLORS.batt, name: "батарея" }] },
   charge: { unit: "%", lines: [{ key: "soc", color: LINE_COLORS.soc, name: "заряд" }] },
   freq: { unit: "Гц", lines: [{ key: "hz", color: LINE_COLORS.hz, name: "частота" }] },
   temp: { unit: "°C", lines: [{ key: "temp", color: LINE_COLORS.temp, name: "температура" }] },
@@ -166,7 +165,6 @@ const SPARK_LINES = [
   { key: "in", color: LINE_COLORS.in, name: "вход", unit: "В" },
   { key: "out", color: LINE_COLORS.out, name: "выход", unit: "В" },
   { key: "load", color: LINE_COLORS.load, name: "нагрузка", unit: "Вт" },
-  { key: "batt", color: LINE_COLORS.batt, name: "батарея", unit: "В" },
   { key: "soc", color: LINE_COLORS.soc, name: "заряд", unit: "%" },
   { key: "hz", color: LINE_COLORS.hz, name: "частота", unit: "Гц" },
   { key: "temp", color: LINE_COLORS.temp, name: "температура", unit: "°C" },
@@ -209,6 +207,10 @@ document.querySelectorAll(".tab").forEach((button) => {
 });
 $("openSettings").addEventListener("click", openSettings);
 $("closeSettings").addEventListener("click", () => $("settings").close());
+$("openCalibrate").addEventListener("click", () => setSettingsPane("calibrate"));
+$("backSettings").addEventListener("click", () => setSettingsPane("main"));
+$("settingsCalibrate").addEventListener("input", updateCalHint);
+$("settingsCalibrate").addEventListener("change", updateCalHint);
 $("openLab").addEventListener("click", openLab);
 $("closeLab").addEventListener("click", () => $("labDialog").close());
 $("stopSim").addEventListener("click", stopSim);
@@ -673,15 +675,56 @@ $("labGroups").addEventListener("click", async (event) => {
 async function openSettings() {
   const response = await fetch("/api/settings");
   const settings = await response.json();
-  const form = $("settingsForm");
+  fillForm($("settingsForm"), settings);
+  $("settingsMsg").textContent = "";
+  setSettingsPane("main");
+  updateCalHint();
+  $("settings").showModal();
+}
+
+function fillForm(form, settings) {
   for (const [key, value] of Object.entries(settings)) {
     const field = form.elements[key];
     if (!field) continue;
     if (field.type === "checkbox") field.checked = Boolean(value);
     else field.value = value;
   }
-  $("settingsMsg").textContent = "";
-  $("settings").showModal();
+}
+
+function setSettingsPane(pane) {
+  const calibrate = pane === "calibrate";
+  $("settingsMain").hidden = calibrate;
+  $("settingsCalibrate").hidden = !calibrate;
+  $("backSettings").hidden = !calibrate;
+  $("settingsTitle").textContent = calibrate ? "Калибровка" : "Настройки";
+}
+
+function ruNum(value, digits) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("ru-RU", { maximumFractionDigits: digits, minimumFractionDigits: 0 });
+}
+
+function updateCalHint() {
+  const hint = $("calPackHint");
+  const form = $("settingsForm");
+  if (!hint || !form) return;
+  const series = Number(form.elements.battery_count && form.elements.battery_count.value) || 2;
+  const groups = Number(form.elements.battery_groups && form.elements.battery_groups.value) || 1;
+  const ah = Number(form.elements.battery_ah && form.elements.battery_ah.value) || 12;
+  const health = Number(form.elements.battery_health && form.elements.battery_health.value) || 100;
+  const full = Number(form.elements.full_voltage && form.elements.full_voltage.value) || 13.5;
+  const low = Number(form.elements.low_voltage && form.elements.low_voltage.value) || 11.1;
+  const packAh = ah * groups;
+  const packWh = 12 * series * packAh * (health / 100);
+  const q1 = form.elements.q1_battery_low && form.elements.q1_battery_low.checked;
+  hint.textContent = [
+    `${series}×12 В · ${ruNum(packAh, 1)} А·ч · ${ruNum(packWh, 0)} Вт·ч`,
+    `На сети 100%: ${ruNum(full * series, 1)} В. Без сети 100%: ${ruNum(12 * series, 1)} В.`,
+    q1
+      ? "Уведомление о разряде — по флагу Q1 ИБП."
+      : `Уведомление о разряде ниже ${ruNum(low * series, 1)} В пакета.`,
+  ].join(" ");
 }
 
 async function saveTelegram(event) {
@@ -830,8 +873,9 @@ function applyChartPrefs(settings) {
       item.classList.toggle("on", Number(item.dataset.minutes) === minutes);
     });
   }
-  if (settings.chart_series && SERIES[settings.chart_series]) {
-    series = settings.chart_series;
+  const nextSeries = settings.chart_series === "battery" ? "charge" : settings.chart_series;
+  if (nextSeries && SERIES[nextSeries]) {
+    series = nextSeries;
     document.querySelectorAll("#series button").forEach((item) => {
       item.classList.toggle("on", item.dataset.series === series);
     });
@@ -1283,6 +1327,7 @@ function withSim(reading) {
   } else if (code === "battery_low") {
     next.battery_low = true;
     next.battery_pct = 12;
+    if (next.battery_wh_full != null) next.battery_wh = Math.round(Number(next.battery_wh_full) * 0.12 * 10) / 10;
   } else if (code === "battery_low_clear") {
     next.battery_low = false;
   } else if (code === "battery_swap") {
@@ -1423,6 +1468,25 @@ function paint(reading, snapshot) {
   $("cellCap").textContent = packLoose
     ? "снят"
     : reading.battery_pct == null ? "—" : `${Math.round(reading.battery_pct)}%`;
+  if ($("cellWh")) {
+    if (packLoose) {
+      $("cellWh").textContent = "—";
+      $("cellWh").title = "";
+    } else {
+      const seriesCount = Number(settings.battery_count) || 2;
+      const groups = Number(settings.battery_groups) || 1;
+      const ah = Number(settings.battery_ah) || 12;
+      const health = Number(settings.battery_health) || 100;
+      const fullWh = reading.battery_wh_full != null
+        ? Number(reading.battery_wh_full)
+        : 12 * seriesCount * ah * groups * (health / 100);
+      const wh = reading.battery_wh != null
+        ? Number(reading.battery_wh)
+        : reading.battery_pct == null ? null : fullWh * Number(reading.battery_pct) / 100;
+      $("cellWh").textContent = formatWh(wh);
+      $("cellWh").title = fullWh == null ? "" : `из ${formatWh(fullWh)}`;
+    }
+  }
   $("mBattCell").textContent = reading.battery_v == null ? "—" : `${(reading.battery_v / seriesCount).toFixed(1)} В на банку`;
   $("mHealth").textContent = settings.battery_health == null ? "—" : `здоровье ${settings.battery_health}%`;
   $("mMode").textContent = reading.mode_label || "—";
@@ -1845,15 +1909,7 @@ function drawSpark() {
   const lines = sparkLines();
   const span = sparkSpan();
   const visible = points.filter((point) => point.t >= span.start - 2 && point.t <= span.end + 2);
-  const data = visible.map((point, index) => {
-    const copy = { ...point };
-    if (sparkView.follow && index === visible.length - 1 && sparkEase.shown) {
-      SPARK_LINES.forEach((line) => {
-        if (sparkEase.shown[line.key] != null) copy[line.key] = sparkEase.shown[line.key];
-      });
-    }
-    return copy;
-  });
+  const data = visible.map((point) => ({ ...point }));
   if (sparkView.follow && data.length && state && state.reading) {
     const head = { t: span.end, ...sparkEase.live };
     const last = data[data.length - 1];
@@ -1926,6 +1982,49 @@ function syncPackCells(series, groups) {
   }).join("");
 }
 
+function minAxisSpan(unit) {
+  if (unit === "%") return 10;
+  if (unit === "В") return 6;
+  if (unit === "Гц") return 1;
+  if (unit === "°C") return 5;
+  if (unit === "Вт") return 50;
+  return 1;
+}
+
+function fitAxis(min, max, unit) {
+  const floor = minAxisSpan(unit);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return { min: 0, max: floor };
+  }
+  if (max < min) {
+    const swap = min;
+    min = max;
+    max = swap;
+  }
+  if (max - min < floor) {
+    const mid = (min + max) / 2;
+    min = mid - floor / 2;
+    max = mid + floor / 2;
+  }
+  const pad = (max - min) * 0.1;
+  min -= pad;
+  max += pad;
+  if (unit === "%") {
+    min = Math.max(0, min);
+    max = Math.min(100, max);
+    if (max - min < floor) {
+      if (max >= 100) min = Math.max(0, 100 - floor);
+      else if (min <= 0) max = Math.min(100, floor);
+      else {
+        const mid = (min + max) / 2;
+        min = Math.max(0, mid - floor / 2);
+        max = Math.min(100, mid + floor / 2);
+      }
+    }
+  }
+  return { min, max };
+}
+
 function lineScale(data, lines) {
   const groups = {};
   lines.forEach((line) => {
@@ -1943,20 +2042,10 @@ function lineScale(data, lines) {
   });
   Object.keys(groups).forEach((unit) => {
     const group = groups[unit];
-    if (!Number.isFinite(group.min)) {
-      group.min = 0;
-      group.max = 1;
-    }
-    if (group.min === group.max) {
-      group.min -= 1;
-      group.max += 1;
-    }
-    const span = group.max - group.min;
-    const targetMin = group.min - span * 0.12;
-    const targetMax = group.max + span * 0.12;
-    const eased = sparkEase.units[unit] || { min: targetMin, max: targetMax };
-    eased.min = easeToward(eased.min, targetMin, 0.12);
-    eased.max = easeToward(eased.max, targetMax, 0.12);
+    const fitted = fitAxis(group.min, group.max, unit);
+    const eased = sparkEase.units[unit] || { min: fitted.min, max: fitted.max };
+    eased.min = easeToward(eased.min, fitted.min, 0.18);
+    eased.max = easeToward(eased.max, fitted.max, 0.18);
     sparkEase.units[unit] = eased;
     group.min = eased.min;
     group.max = eased.max;
@@ -2014,6 +2103,27 @@ function fillBoostBands(ctx, data, lines, xOf, yOfValue, gap) {
   });
 }
 
+function clamp(value, lo, hi) {
+  return Math.min(hi, Math.max(lo, value));
+}
+
+function smoothSegment(ctx, pts, i) {
+  const p0 = pts[Math.max(0, i - 1)];
+  const p1 = pts[i];
+  const p2 = pts[i + 1];
+  const p3 = pts[Math.min(pts.length - 1, i + 2)];
+  const lo = Math.min(p1.y, p2.y);
+  const hi = Math.max(p1.y, p2.y);
+  ctx.bezierCurveTo(
+    p1.x + (p2.x - p0.x) / 6,
+    clamp(p1.y + (p2.y - p0.y) / 6, lo, hi),
+    p2.x - (p3.x - p1.x) / 6,
+    clamp(p2.y - (p3.y - p1.y) / 6, lo, hi),
+    p2.x,
+    p2.y,
+  );
+}
+
 function strokeSmooth(ctx, pts) {
   if (pts.length < 2) return;
   ctx.beginPath();
@@ -2023,33 +2133,8 @@ function strokeSmooth(ctx, pts) {
     ctx.stroke();
     return;
   }
-  for (let i = 0; i < pts.length - 1; i += 1) {
-    const p0 = pts[Math.max(0, i - 1)];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[Math.min(pts.length - 1, i + 2)];
-    const [c1, c2] = splineControls(p0, p1, p2, p3);
-    ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, p2.x, p2.y);
-  }
+  for (let i = 0; i < pts.length - 1; i += 1) smoothSegment(ctx, pts, i);
   ctx.stroke();
-}
-
-function splineControls(p0, p1, p2, p3) {
-  const d1 = Math.max(1e-3, Math.hypot(p1.x - p0.x, p1.y - p0.y));
-  const d2 = Math.max(1e-3, Math.hypot(p2.x - p1.x, p2.y - p1.y));
-  const d3 = Math.max(1e-3, Math.hypot(p3.x - p2.x, p3.y - p2.y));
-  const s1 = (2 * d1) / (d1 + d2);
-  const s2 = (2 * d3) / (d2 + d3);
-  return [
-    {
-      x: p1.x + (p2.x - p0.x) * s1 / 9,
-      y: p1.y + (p2.y - p0.y) * s1 / 9,
-    },
-    {
-      x: p2.x - (p3.x - p1.x) * s2 / 9,
-      y: p2.y - (p3.y - p1.y) * s2 / 9,
-    },
-  ];
 }
 
 function layoutSchemeTraces() {
@@ -2112,15 +2197,9 @@ function drawLines(canvas, data, lines, options) {
     return;
   }
   const scales = options.perUnit ? lineScale(data, lines) : null;
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (min === max) {
-    min -= 1;
-    max += 1;
-  }
-  const span = max - min;
-  min -= span * 0.12;
-  max += span * 0.12;
+  const fitted = fitAxis(Math.min(...values), Math.max(...values), options.unit || (lines[0] && lines[0].unit) || "");
+  let min = fitted.min;
+  let max = fitted.max;
   const left = options.axis ? 58 : pad;
   const bottom = options.axis || options.ticks ? 22 : 10;
   const plotW = width - left - 16;
@@ -2132,9 +2211,10 @@ function drawLines(canvas, data, lines, options) {
   const yOfValue = (value, unit) => {
     if (scales) {
       const group = scales[unit || ""] || { min, max };
-      return pad + ((group.max - value) / (group.max - group.min)) * plotH;
+      const span = group.max - group.min || 1;
+      return pad + ((group.max - value) / span) * plotH;
     }
-    return pad + ((max - value) / (max - min)) * plotH;
+    return pad + ((max - value) / (max - min || 1)) * plotH;
   };
   const yOf = (value) => yOfValue(value, lines[0] && lines[0].unit);
   ctx.strokeStyle = "rgba(232,220,196,0.10)";
@@ -2178,20 +2258,7 @@ function drawLines(canvas, data, lines, options) {
       ctx.beginPath();
       ctx.moveTo(first.x, first.y);
       if (options.smooth) {
-        for (let i = 0; i < pts.length - 1; i += 1) {
-          const p0 = pts[Math.max(0, i - 1)];
-          const p1 = pts[i];
-          const p2 = pts[i + 1];
-          const p3 = pts[Math.min(pts.length - 1, i + 2)];
-          ctx.bezierCurveTo(
-            p1.x + (p2.x - p0.x) / 6,
-            p1.y + (p2.y - p0.y) / 6,
-            p2.x - (p3.x - p1.x) / 6,
-            p2.y - (p3.y - p1.y) / 6,
-            p2.x,
-            p2.y,
-          );
-        }
+        for (let i = 0; i < pts.length - 1; i += 1) smoothSegment(ctx, pts, i);
       } else {
         pts.slice(1).forEach((pt) => ctx.lineTo(pt.x, pt.y));
       }
@@ -2383,6 +2450,15 @@ function portText(snapshot) {
 
 function fixed(value, digits) {
   return value == null || Number.isNaN(Number(value)) ? "—" : Number(value).toFixed(digits);
+}
+
+function formatWh(value) {
+  if (value == null || Number.isNaN(Number(value))) return "—";
+  const n = Number(value);
+  const text = Math.abs(n - Math.round(n)) < 0.05
+    ? String(Math.round(n))
+    : n.toFixed(1).replace(".", ",");
+  return `${text} Вт·ч`;
 }
 
 function clock(total) {

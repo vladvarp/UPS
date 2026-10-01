@@ -5,6 +5,7 @@ from ups.monitor import _validate
 from ups.transport import TransportError, probe_serial
 from ups.protocol import (
     battery_boost_active,
+    battery_low_active,
     stabilizer_dir,
     battery_percent,
     battery_voltage_chaotic,
@@ -12,6 +13,8 @@ from ups.protocol import (
     load_watts,
     mains_voltage_active,
     mode_label,
+    pack_capacity_wh,
+    pack_energy_wh,
     parse_q1,
     parse_ratings,
     plausible,
@@ -76,6 +79,29 @@ class BatteryTests(unittest.TestCase):
     def test_empty_pack_is_zero(self):
         percent = battery_percent(21.0, 2, on_battery=True, full_v=13.5, eod_v=10.5)
         self.assertEqual(percent, 0)
+
+    def test_pack_energy_from_ah(self):
+        full = pack_capacity_wh(2, 1, 12, 100)
+        self.assertEqual(full, 288)
+        self.assertEqual(pack_energy_wh(100, full), 288)
+        self.assertEqual(pack_energy_wh(50, full), 144)
+        self.assertEqual(pack_capacity_wh(2, 2, 12, 80), 460.8)
+
+    def test_calibration_low_uses_hysteresis_on_inverter(self):
+        self.assertFalse(battery_low_active(24.0, 2, True, 11.1, False))
+        self.assertTrue(battery_low_active(22.2, 2, True, 11.1, False))
+        self.assertTrue(battery_low_active(22.6, 2, True, 11.1, True))
+        self.assertFalse(battery_low_active(23.1, 2, True, 11.1, True))
+        self.assertFalse(battery_low_active(21.0, 2, False, 11.1, True))
+
+    def test_q1_flag_and_low_voltage_validate(self):
+        clean, error = _validate({"q1_battery_low": False, "low_voltage": 11.1})
+        self.assertIsNone(error)
+        self.assertFalse(clean["q1_battery_low"])
+        self.assertEqual(clean["low_voltage"], 11.1)
+        empty, bad = _validate({"eod_voltage": 10.5, "low_voltage": 10.5, "full_voltage": 13.5})
+        self.assertEqual(empty, {})
+        self.assertIn("садится", bad or "")
 
     def test_runtime_at_the_shown_load(self):
         minutes = runtime_minutes(45, amp_hours=12, kva=0.7, health_pct=100)

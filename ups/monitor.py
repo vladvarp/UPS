@@ -16,6 +16,7 @@ from ups import APP_NAME, __version__
 from ups import autostart, power
 from ups.protocol import (
     ProtocolError,
+    battery_low_active,
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
@@ -25,6 +26,8 @@ from ups.protocol import (
     battery_boost_active,
     stabilizer_dir,
     mode_label,
+    pack_capacity_wh,
+    pack_energy_wh,
     voltage_limits,
     voltage_note,
     parse_info,
@@ -79,6 +82,8 @@ DEFAULTS = {
     "ups_kva": 0.7,
     "full_voltage": 13.5,
     "eod_voltage": 10.5,
+    "low_voltage": 11.1,
+    "q1_battery_low": False,
     "battery_health": 100,
     "sound": True,
     "pc_shutdown": False,
@@ -118,6 +123,7 @@ _LIMITS = {
     "ups_kva": (0.2, 20),
     "full_voltage": (12, 15),
     "eod_voltage": (9, 13),
+    "low_voltage": (9.5, 13.5),
     "battery_health": (10, 100),
     "shutdown_delay": (30, 3600),
     "volt_low": (80, 300),
@@ -1141,9 +1147,18 @@ class Monitor:
         swap = None if loose else self._note_pack_swap(source == "live")
         reading = status.as_dict()
         volt = voltage_state(reading.get("input_v"), status.on_battery, settings)
+        capacity_wh = pack_capacity_wh(
+            series,
+            groups,
+            float(settings["battery_ah"]),
+            float(settings["battery_health"]),
+        )
         reading.update(
             {
+                "battery_low": self._resolve_battery_low(status, settings, now),
                 "battery_pct": None if percent is None else round(percent, 1),
+                "battery_wh": pack_energy_wh(percent, capacity_wh),
+                "battery_wh_full": capacity_wh,
                 "runtime_min": minutes,
                 "discharge_seconds": int(discharge),
                 "shutdown_seconds": countdown,
@@ -1264,6 +1279,20 @@ class Monitor:
             return
         subprocess.Popen(["shutdown", "/a"], creationflags=CREATE_NO_WINDOW)
         self._shutdown_sent = False
+
+    def _resolve_battery_low(self, status, settings: dict, now: float) -> bool:
+        if settings.get("q1_battery_low", False):
+            return bool(status.battery_low)
+        was = bool(self._edges.get("battery_low"))
+        if now < self._ignore_pack_until and status.on_battery:
+            return was
+        return battery_low_active(
+            status.battery_v,
+            int(settings["battery_count"]),
+            status.on_battery,
+            float(settings.get("low_voltage", 11.1)),
+            was,
+        )
 
     def _arm_pack_quiet(self, now: float) -> None:
         # Float charge vs inverter voltage jumps on transfer. That is not a pack swap
@@ -1724,6 +1753,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
         if key in {
             "sound", "pc_shutdown", "telegram_notify_power", "telegram_notify_alerts",
             "telegram_digest", "autostart", "journal_enabled", "windows_notify",
+            "q1_battery_low",
         }:
             clean[key] = bool(value)
             continue
@@ -1731,7 +1761,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             clean[key] = _clean_telegram_events(value)
             continue
         if key == "spark_lines":
-            allowed = {"in", "out", "load", "batt", "soc", "hz", "temp"}
+            allowed = {"in", "out", "load", "soc", "hz", "temp"}
             lines = [str(item) for item in (value or []) if str(item) in allowed]
             clean[key] = lines or ["in", "out"]
             continue
@@ -1746,7 +1776,9 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             continue
         if key == "chart_series":
             series = str(value or "")
-            if series not in {"voltage", "load", "battery", "charge", "freq", "temp"}:
+            if series == "battery":
+                series = "charge"
+            if series not in {"voltage", "load", "charge", "freq", "temp"}:
                 return {}, "Неизвестный тип графика"
             clean[key] = series
             continue
@@ -1813,8 +1845,11 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
         clean[key] = number
     full = clean.get("full_voltage", DEFAULTS["full_voltage"])
     eod = clean.get("eod_voltage", DEFAULTS["eod_voltage"])
+    low_cell = clean.get("low_voltage", DEFAULTS["low_voltage"])
     if eod >= full:
         return {}, "Конец разряда должен быть ниже напряжения полного заряда"
+    if not eod < low_cell < full:
+        return {}, "Порог «садится» должен быть между концом разряда и полным зарядом"
     crit_low = clean.get("volt_crit_low", DEFAULTS["volt_crit_low"])
     low = clean.get("volt_low", DEFAULTS["volt_low"])
     high = clean.get("volt_high", DEFAULTS["volt_high"])

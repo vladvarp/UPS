@@ -1225,7 +1225,8 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
 .schematic[data-pack="loose"] .pack-mod::before,
 .schematic[data-pack="loose"] .pack-mod::after { border-color: #e15d4c; }
 .schematic[data-pack="loose"] .pack-mod h3,
-.schematic[data-pack="loose"] .cell-cap { color: #ffb1a8; }
+.schematic[data-pack="loose"] .cell-cap,
+.schematic[data-pack="loose"] .cell-wh { color: #ffb1a8; }
 .schematic[data-pack="loose"] .pack-mod .mod-k { color: #ffb1a8; }
 .schematic[data-pack="loose"] .jar {
   border-color: #e15d4c;
@@ -1251,7 +1252,8 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
 .schematic[data-pack="loose"] .scheme-mode { color: #ffb1a8; }
 .schematic[data-pack="low"] .pack-mod { border-color: rgba(230, 177, 92, 0.65); }
 .schematic[data-pack="low"] .pack-mod h3,
-.schematic[data-pack="low"] .cell-cap { color: var(--warn); }
+.schematic[data-pack="low"] .cell-cap,
+.schematic[data-pack="low"] .cell-wh { color: var(--warn); }
 .schematic[data-volt="low"][data-mode="mains"] .path-mains.mod,
 .schematic[data-volt="high"][data-mode="mains"] .path-mains.mod,
 .schematic[data-volt="low"][data-mode="mains"] .path-out.mod,
@@ -1467,6 +1469,14 @@ main.fill .view.on { flex: 1; min-height: 0; overflow: hidden; }
   font-family: var(--mono);
   font-size: 13px;
   letter-spacing: 0.06em;
+  text-align: center;
+}
+.cell-wh {
+  margin: 2px 0 0;
+  color: var(--gold);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
   text-align: center;
 }
 @keyframes acHop {
@@ -2251,6 +2261,29 @@ label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); fo
 label.wide, label.check { grid-column: 1 / -1; }
 label.check { flex-direction: row; align-items: center; color: var(--text); }
 #settings .switch { margin: 0; }
+#settings .calib-open {
+  grid-column: 1 / -1;
+  width: 100%;
+  justify-content: center;
+}
+#settings form footer {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  gap: 16px;
+}
+#settings #backSettings {
+  flex: 0 0 auto;
+  min-width: 140px;
+}
+#settingsCalibrate .lead { margin: 0 0 10px; }
+.cal-hint {
+  margin: 0 0 12px;
+  color: var(--copper-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
 input[type="number"], input[type="text"], input[type="password"] {
   background: #0c100c;
   border: 1px solid var(--line);
@@ -2266,7 +2299,7 @@ input[type="number"], input[type="text"], input[type="password"] {
   padding: 0;
   color: var(--text);
 }
-#settingsMsg { margin: 0; color: var(--ok); }
+#settingsMsg { flex: 1; min-width: 0; margin: 0; color: var(--ok); }
 .notice-dock {
   position: fixed;
   left: 16px;

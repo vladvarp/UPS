@@ -89,6 +89,9 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(clean["spark_window"], 1800)
         self.assertEqual(clean["chart_minutes"], 360)
         self.assertEqual(clean["chart_series"], "charge")
+        mapped, err = _validate({"chart_series": "battery"})
+        self.assertIsNone(err)
+        self.assertEqual(mapped["chart_series"], "charge")
         self.assertEqual(
             clean["telegram_events"]["on_battery"],
             {"on": True, "sound": False, "tray": True},

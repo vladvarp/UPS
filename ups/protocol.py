@@ -215,6 +215,48 @@ def battery_percent(
     return _clamp(_interp(each, curve))
 
 
+NOMINAL_CELL_V = 12.0
+BATTERY_LOW_HYST = 0.4
+
+
+def pack_capacity_wh(
+    series: int,
+    groups: int,
+    ah: float,
+    health_pct: float = 100,
+) -> float | None:
+    """Rated pack energy in Wh from 12 V cells, Ah and parallel groups."""
+    if series <= 0 or groups <= 0 or ah <= 0:
+        return None
+    health = max(10.0, min(100.0, float(health_pct)))
+    return round(NOMINAL_CELL_V * series * ah * groups * health / 100.0, 1)
+
+
+def pack_energy_wh(percent: float | None, capacity_wh: float | None) -> float | None:
+    """Remaining energy in Wh from SOC and rated capacity."""
+    if percent is None or capacity_wh is None:
+        return None
+    return round(capacity_wh * max(0.0, min(100.0, float(percent))) / 100.0, 1)
+
+
+def battery_low_active(
+    pack_v: float | None,
+    series: int,
+    on_battery: bool,
+    low_v: float,
+    was_low: bool,
+    *,
+    hyst: float = BATTERY_LOW_HYST,
+) -> bool:
+    """Voltage-based «battery dying» with hysteresis. Only while on inverter."""
+    if not on_battery or pack_v is None or series <= 0:
+        return False
+    each = pack_v / series
+    if was_low:
+        return each < low_v + hyst
+    return each <= low_v
+
+
 def runtime_minutes(
     load_pct: float | None,
     amp_hours: float,
