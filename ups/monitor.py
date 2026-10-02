@@ -548,16 +548,8 @@ class Monitor:
                 for point in demo
                 if start_ts <= point["t"] < end_ts
             ]
-        else:
-            rows = self._db.execute(
-                """
-                SELECT ts, load_pct, on_battery FROM readings
-                WHERE ts >= ? AND ts < ? AND source = 'live'
-                ORDER BY ts
-                """,
-                (start_ts, end_ts),
-            ).fetchall()
-        return reports.energy_report(rows, kva, start_ts, end_ts)
+            return reports.energy_report(rows, kva, start_ts, end_ts)
+        return reports.energy_from_db(self._db, kva, start_ts, end_ts)
 
     def _kva(self) -> float:
         with self._lock:
@@ -724,7 +716,16 @@ class Monitor:
             }
             for row in rows
         ]
-        return {"points": _decimate([point for point in points if _sane_point(point)], 700)}
+        span_min = float(minutes)
+        if span_min <= 20:
+            limit = 2400
+        elif span_min <= 90:
+            limit = 1600
+        elif span_min <= 400:
+            limit = 1100
+        else:
+            limit = 800
+        return {"points": _decimate([point for point in points if _sane_point(point)], limit)}
 
     def simulations(self) -> dict:
         return {"ok": True, "items": [dict(item) for item in SIMULATIONS]}
@@ -1631,6 +1632,7 @@ class Monitor:
                 code TEXT,
                 message TEXT
             );
+            CREATE INDEX IF NOT EXISTS readings_live_ts ON readings(source, ts);
             """
         )
         self._db.execute("DELETE FROM readings WHERE ts < ?", (time.time() - 30 * 86400,))

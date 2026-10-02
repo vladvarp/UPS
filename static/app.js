@@ -7,6 +7,11 @@ let historyMinutes = 60;
 let series = "voltage";
 let hiddenLines = {};
 let chartHoverX = null;
+let chartView = { window: 3600, follow: true, end: 0 };
+let chartDrag = null;
+let historyReq = 0;
+let chartHistTimer = 0;
+let energyAbort = null;
 let sparkHoverX = null;
 let sparkOn = { in: true, out: true };
 let sparkView = { window: 900, follow: true, end: 0 };
@@ -262,6 +267,9 @@ document.querySelectorAll(".time-spin button").forEach((button) => {
 document.querySelectorAll(".cal-quick button").forEach((button) => {
   button.addEventListener("click", () => applyEnergyQuick(button.dataset.quick));
 });
+document.addEventListener("pointerover", onUiTip);
+document.addEventListener("pointermove", onUiTipMove);
+document.addEventListener("pointerout", onUiTipOut);
 $("enChart").addEventListener("mousemove", hoverEnergy);
 $("enChart").addEventListener("mouseleave", () => {
   energyHoverX = null;
@@ -309,12 +317,13 @@ document.addEventListener("keydown", (event) => {
 $("eventList").addEventListener("click", (event) => {
   const row = event.target.closest("li[data-code]");
   if (!row) return;
+  closeNoticeInbox();
   openAlert({
     code: row.dataset.code,
     level: row.dataset.level,
     message: row.dataset.message,
     t: Number(row.dataset.t) || Date.now() / 1000,
-  });
+  }, { keep: true });
 });
 window.showQuitDialog = showQuitDialog;
 window.prepareForScreenshot = prepareForScreenshot;
@@ -355,9 +364,7 @@ $("tgMinDown").addEventListener("click", () => nudgeClock("minute", -5));
 $("ranges").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
-  minutes = Number(button.dataset.minutes);
-  document.querySelectorAll("#ranges button").forEach((item) => item.classList.toggle("on", item === button));
-  loadHistory();
+  setChartWindow(Number(button.dataset.minutes) * 60, true);
   persistChartPrefs();
 });
 $("series").addEventListener("click", (event) => {
@@ -375,17 +382,14 @@ $("chart").addEventListener("mouseleave", () => {
   $("chartTip").textContent = "Наведите курсор — увидите точные значения";
   drawChart(false);
 });
-$("chart").addEventListener("wheel", (event) => {
-  event.preventDefault();
-  const order = [15, 60, 360, 1440];
-  const index = order.indexOf(minutes);
-  const next = event.deltaY > 0 ? Math.min(order.length - 1, index + 1) : Math.max(0, index - 1);
-  if (order[next] === minutes) return;
-  minutes = order[next];
-  document.querySelectorAll("#ranges button").forEach((item) => item.classList.toggle("on", Number(item.dataset.minutes) === minutes));
-  loadHistory();
-  persistChartPrefs();
-}, { passive: false });
+$("chart").addEventListener("wheel", onChartWheel, { passive: false });
+$("chart").addEventListener("pointerdown", onChartDown);
+$("chart").addEventListener("dblclick", resetChartView);
+if ($("chartPanLeft")) $("chartPanLeft").addEventListener("click", () => panChart(-0.35));
+if ($("chartPanRight")) $("chartPanRight").addEventListener("click", () => panChart(0.35));
+if ($("chartZoomIn")) $("chartZoomIn").addEventListener("click", () => zoomChart(1 / 1.35));
+if ($("chartZoomOut")) $("chartZoomOut").addEventListener("click", () => zoomChart(1.35));
+if ($("chartReset")) $("chartReset").addEventListener("click", resetChartView);
 $("chartLegend").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
@@ -402,8 +406,14 @@ $("spark").addEventListener("mouseleave", () => {
 $("spark").addEventListener("wheel", onSparkWheel, { passive: false });
 $("spark").addEventListener("dblclick", resetSpark);
 $("spark").addEventListener("pointerdown", onSparkDown);
-window.addEventListener("pointermove", onSparkMove);
-window.addEventListener("pointerup", onSparkUp);
+window.addEventListener("pointermove", (event) => {
+  onSparkMove(event);
+  onChartMove(event);
+});
+window.addEventListener("pointerup", () => {
+  onSparkUp();
+  onChartUp();
+});
 $("sparkZoomIn").addEventListener("click", () => zoomSpark(1 / 1.35));
 $("sparkZoomOut").addEventListener("click", () => zoomSpark(1.35));
 $("sparkPanLeft").addEventListener("click", () => panSpark(-0.35));
@@ -470,7 +480,7 @@ async function pull() {
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("on", tab.dataset.tab === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("on", view.dataset.view === name));
-  document.querySelector("main").classList.toggle("fill", name === "reports" || name === "telegram" || name === "energy");
+  document.querySelector("main").classList.toggle("fill", name === "reports" || name === "telegram" || name === "energy" || name === "chart");
   if (name !== "overview" && name !== "chart") hidePlotTip();
   if (name === "chart") drawChart();
   if (name === "log") loadEvents();
@@ -528,13 +538,23 @@ function reloadLiveHistory() {
 }
 
 async function loadHistory(spanMin) {
-  const need = Math.min(1440, Math.max(minutes, Number(spanMin) || 0, historyMinutes));
+  const span = chartSpan();
+  const now = chartNow();
+  const sparkMin = Math.ceil((sparkView.window || 900) / 60) + 2;
+  const coverMin = Math.max(1, Math.ceil((now - span.start) / 60) + 5);
+  const need = Math.min(1440, Math.max(coverMin, sparkMin, Number(spanMin) || 0, minutes));
   historyMinutes = need;
-  const response = await fetch(`/api/history?minutes=${need}`);
-  const data = await response.json();
-  points = (data.points || []).map((point) => asChartPoint(point));
-  drawChart();
-  drawSpark();
+  const req = ++historyReq;
+  try {
+    const response = await fetch(`/api/history?minutes=${need}`);
+    const data = await response.json();
+    if (req !== historyReq) return;
+    points = (data.points || []).map((point) => asChartPoint(point));
+    drawChart();
+    drawSpark();
+  } catch (_err) {
+    if (req !== historyReq) return;
+  }
 }
 
 async function loadEvents() {
@@ -869,6 +889,7 @@ function applyChartPrefs(settings) {
   const mins = Number(settings.chart_minutes);
   if ([15, 60, 360, 1440].includes(mins)) {
     minutes = mins;
+    chartView.window = mins * 60;
     document.querySelectorAll("#ranges button").forEach((item) => {
       item.classList.toggle("on", Number(item.dataset.minutes) === minutes);
     });
@@ -1942,13 +1963,195 @@ function drawChart(refreshLegend = true) {
         <i style="background:${line.color}"></i>${escapeHtml(line.name)}
       </button>`).join("");
   }
-  drawLines($("chart"), points, visible.length ? visible : spec.lines, {
+  const span = chartSpan();
+  const data = points.filter((point) => point.t >= span.start - 2 && point.t <= span.end + 2);
+  const lines = visible.length ? visible : spec.lines;
+  paintChartStats(data, lines, spec.unit);
+  refreshChartNav();
+  drawLines($("chart"), data, lines, {
     pad: 18,
     axis: true,
     unit: spec.unit,
     digits: series === "load" || series === "charge" ? 0 : 1,
-    gap: gapLimit(points),
+    gap: gapLimit(data.length ? data : points),
+    t0: span.start,
+    t1: span.end,
   });
+}
+
+function chartNow() {
+  return Date.now() / 1000;
+}
+
+function chartSpan() {
+  const now = chartNow();
+  const end = chartView.follow ? now : Math.min(now, chartView.end || now);
+  const start = end - chartView.window;
+  return { start, end, now };
+}
+
+function setChartWindow(seconds, follow) {
+  const next = Math.max(60, Math.min(7 * 86400, Number(seconds) || 3600));
+  chartView.window = next;
+  if (follow) {
+    chartView.follow = true;
+    chartView.end = 0;
+  }
+  const presets = [15, 60, 360, 1440];
+  let best = 60;
+  let bestDist = Infinity;
+  presets.forEach((item) => {
+    const dist = Math.abs(Math.log((next / 60) / item));
+    if (dist < bestDist) {
+      best = item;
+      bestDist = dist;
+    }
+  });
+  minutes = best;
+  document.querySelectorAll("#ranges button").forEach((item) => {
+    item.classList.toggle("on", Number(item.dataset.minutes) === minutes);
+  });
+  ensureChartHistory();
+  if ($("view-chart") && $("view-chart").classList.contains("on")) drawChart();
+}
+
+function ensureChartHistory() {
+  const span = chartSpan();
+  const now = chartNow();
+  const need = Math.min(1440, Math.max(1, Math.ceil((now - span.start) / 60) + 5));
+  let visible = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const stamp = points[i].t;
+    if (stamp >= span.start - 2 && stamp <= span.end + 2) visible += 1;
+  }
+  const sparse = visible < 48 && chartView.window <= 6 * 3600;
+  if (!(need > historyMinutes || sparse)) return;
+  clearTimeout(chartHistTimer);
+  chartHistTimer = setTimeout(() => loadHistory(need), 60);
+}
+
+function refreshChartNav() {
+  if ($("chartRangeLabel")) $("chartRangeLabel").textContent = formatSparkSpan(chartView.window);
+  if ($("chartReset")) $("chartReset").hidden = chartView.follow;
+}
+
+function zoomChart(factor, anchor) {
+  const span = chartSpan();
+  const maxWin = 1440 * 60;
+  const next = Math.max(60, Math.min(maxWin, chartView.window * factor));
+  if (Math.abs(next - chartView.window) < 0.5) return;
+  const pivot = anchor != null ? anchor : (chartView.follow ? span.end : (span.start + span.end) / 2);
+  chartView.window = next;
+  if (!chartView.follow) {
+    const frac = (pivot - span.start) / Math.max(1, span.end - span.start);
+    chartView.end = pivot + (1 - frac) * next;
+  }
+  setChartWindow(chartView.window, chartView.follow);
+  persistChartPrefs();
+}
+
+function panChart(part) {
+  const span = chartSpan();
+  const now = span.now;
+  chartView.follow = false;
+  chartView.end = Math.min(now, span.end + chartView.window * part);
+  if (chartView.end >= now - 1.2) {
+    chartView.follow = true;
+    chartView.end = 0;
+  }
+  if ($("view-chart") && $("view-chart").classList.contains("on")) drawChart();
+  ensureChartHistory();
+}
+
+function resetChartView() {
+  chartView.follow = true;
+  chartView.end = 0;
+  if ($("view-chart") && $("view-chart").classList.contains("on")) drawChart();
+}
+
+function onChartWheel(event) {
+  event.preventDefault();
+  const canvas = $("chart");
+  const plot = canvas && canvas._plot;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  let anchor = chartSpan().end;
+  if (plot) {
+    const frac = Math.min(1, Math.max(0, (x - plot.left) / Math.max(1, plot.plotW)));
+    anchor = plot.t0 + frac * (plot.t1 - plot.t0);
+    if (frac < 0.86) {
+      chartView.follow = false;
+      chartView.end = chartSpan().end;
+    }
+  }
+  zoomChart(event.deltaY > 0 ? 1.18 : 1 / 1.18, anchor);
+}
+
+function onChartDown(event) {
+  const canvas = $("chart");
+  const plot = canvas && canvas._plot;
+  if (!plot) return;
+  canvas.setPointerCapture(event.pointerId);
+  hidePlotTip();
+  chartDrag = {
+    x: event.clientX,
+    end: chartSpan().end,
+    follow: chartView.follow,
+    plotW: plot.plotW,
+  };
+}
+
+function onChartMove(event) {
+  if (!chartDrag) return;
+  const dt = ((chartDrag.x - event.clientX) / Math.max(1, chartDrag.plotW)) * chartView.window;
+  const now = chartNow();
+  chartView.follow = false;
+  chartView.end = Math.min(now, chartDrag.end + dt);
+  if (chartView.end >= now - 0.8) {
+    chartView.follow = true;
+    chartView.end = 0;
+  }
+  drawChart(false);
+}
+
+function onChartUp() {
+  chartDrag = null;
+  ensureChartHistory();
+}
+
+function paintChartStats(data, lines, unit) {
+  const box = $("chartStats");
+  if (!box) return;
+  if (!data.length) {
+    box.textContent = "Нет точек в этом окне";
+    return;
+  }
+  const bits = lines.map((line) => {
+    const suffix = line.unit || unit || "";
+    const digits = suffix === "%" || suffix === "Вт" ? 0 : 1;
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    let count = 0;
+    let peakT = data[0].t;
+    for (let i = 0; i < data.length; i += 1) {
+      const value = data[i][line.key];
+      if (value == null) continue;
+      if (value < min) min = value;
+      if (value > max) {
+        max = value;
+        peakT = data[i].t;
+      }
+      sum += value;
+      count += 1;
+    }
+    if (!count) return `${line.name}: —`;
+    const avg = sum / count;
+    return `${line.name}: <b>${min.toFixed(digits)}–${max.toFixed(digits)}</b> ${suffix} · Δ ${(max - min).toFixed(digits)} · ср. ${avg.toFixed(digits)} · пик ${clockTime(peakT).slice(0, 5)}`;
+  });
+  const gaps = splitByGap(data, gapLimit(data)).length - 1;
+  if (gaps > 0) bits.push(`<em>пропусков ${gaps}</em>`);
+  box.innerHTML = bits.join("<span> · </span>");
 }
 
 function syncPackCells(series, groups) {
@@ -2011,6 +2214,10 @@ function fitAxis(min, max, unit) {
   const pad = (max - min) * 0.1;
   min -= pad;
   max += pad;
+  if (unit === "В") {
+    min = Math.max(0, min);
+    if (max <= min) max = min + floor;
+  }
   if (unit === "%") {
     min = Math.max(0, min);
     max = Math.min(100, max);
@@ -2171,10 +2378,15 @@ function layoutSchemeTraces() {
 function drawLines(canvas, data, lines, options) {
   const width = canvas.clientWidth || 600;
   const fixed = Number(canvas.dataset.h || 0);
-  const height = canvas.id === "spark"
-    ? Math.max(88, canvas.clientHeight || 120)
-    : (fixed || canvas.clientHeight || 120);
-  if (canvas.id !== "spark") canvas.style.height = `${height}px`;
+  let height;
+  if (canvas.id === "spark") {
+    height = Math.max(88, canvas.clientHeight || 120);
+  } else if (canvas.id === "chart") {
+    height = Math.max(260, canvas.clientHeight || fixed || 460);
+  } else {
+    height = fixed || canvas.clientHeight || 120;
+    canvas.style.height = `${height}px`;
+  }
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
@@ -2190,7 +2402,13 @@ function drawLines(canvas, data, lines, options) {
     canvas._plot = null;
     return;
   }
-  const values = data.flatMap((point) => lines.map((line) => point[line.key])).filter((value) => value != null);
+  const values = [];
+  for (let i = 0; i < data.length; i += 1) {
+    for (let j = 0; j < lines.length; j += 1) {
+      const value = data[i][lines[j].key];
+      if (value != null) values.push(value);
+    }
+  }
   if (!values.length) {
     ctx.fillStyle = "#7f9aaa";
     ctx.font = "14px Segoe UI";
@@ -2199,9 +2417,15 @@ function drawLines(canvas, data, lines, options) {
     return;
   }
   const scales = options.perUnit ? lineScale(data, lines) : null;
-  const fitted = fitAxis(Math.min(...values), Math.max(...values), options.unit || (lines[0] && lines[0].unit) || "");
-  let min = fitted.min;
-  let max = fitted.max;
+  let min = values[0];
+  let max = values[0];
+  for (let i = 1; i < values.length; i += 1) {
+    if (values[i] < min) min = values[i];
+    if (values[i] > max) max = values[i];
+  }
+  const fitted = fitAxis(min, max, options.unit || (lines[0] && lines[0].unit) || "");
+  min = fitted.min;
+  max = fitted.max;
   const left = options.axis ? 58 : pad;
   const bottom = options.axis || options.ticks ? 22 : 10;
   const plotW = width - left - 16;
@@ -2356,11 +2580,13 @@ function plotTipHtml(point, lines, unit) {
   return `<strong>${escapeHtml(clockTime(point.t))}</strong>${rows}${extra}`;
 }
 
-function showPlotTip(event, html) {
+function showPlotTip(event, html, kind) {
   const tip = $("plotTip");
   if (!tip) return;
   tip.innerHTML = html;
   tip.hidden = false;
+  tip.dataset.kind = kind || "plot";
+  tip.classList.toggle("ui", kind === "ui");
   const pad = 16;
   const tw = tip.offsetWidth;
   const th = tip.offsetHeight;
@@ -2374,7 +2600,54 @@ function showPlotTip(event, html) {
 
 function hidePlotTip() {
   const tip = $("plotTip");
-  if (tip) tip.hidden = true;
+  if (!tip) return;
+  tip.hidden = true;
+  tip.dataset.kind = "";
+  tip.classList.remove("ui");
+}
+
+function stealTipText(node) {
+  if (!node || node.id === "plotTip") return "";
+  if (node.dataset.tip) return node.dataset.tip;
+  if (node.hasAttribute("title") && node.title) {
+    node.dataset.tip = node.title;
+    node.removeAttribute("title");
+    return node.dataset.tip;
+  }
+  return "";
+}
+
+function uiTipNode(event) {
+  const node = event.target && event.target.closest && event.target.closest("[title], [data-tip]");
+  if (!node || node.id === "plotTip") return null;
+  if (event.target.closest && event.target.closest("#chart, #spark, #enChart, .plot-tip")) return null;
+  return node;
+}
+
+function onUiTip(event) {
+  const node = uiTipNode(event);
+  if (!node) return;
+  const text = stealTipText(node);
+  if (!text) return;
+  showPlotTip(event, `<strong>${escapeHtml(text)}</strong>`, "ui");
+}
+
+function onUiTipMove(event) {
+  const tip = $("plotTip");
+  if (!tip || tip.hidden || tip.dataset.kind !== "ui") return;
+  const node = uiTipNode(event);
+  if (!node) return;
+  showPlotTip(event, tip.innerHTML, "ui");
+}
+
+function onUiTipOut(event) {
+  const tip = $("plotTip");
+  if (!tip || tip.dataset.kind !== "ui") return;
+  const node = event.target && event.target.closest && event.target.closest("[title], [data-tip]");
+  if (!node) return;
+  const next = event.relatedTarget;
+  if (next && node.contains(next)) return;
+  hidePlotTip();
 }
 
 function hoverChart(event) {
@@ -2473,6 +2746,12 @@ function clock(total) {
 
 function clockTime(unix) {
   return new Date(unix * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function clockDateTime(unix) {
+  const date = new Date(unix * 1000);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function runtime(minutesValue) {
@@ -2746,14 +3025,29 @@ async function loadEnergy(force) {
   paintEnergyRange();
   const from = Math.floor(Math.min(range.from.getTime(), range.to.getTime()) / 1000);
   const to = Math.floor(Math.max(range.from.getTime(), range.to.getTime()) / 1000);
-  const data = await fetch(`/api/energy?from=${from}&to=${to}&t=${force ? Date.now() : ""}`).then((item) => item.json()).catch(() => null);
-  energyData = data && data.ok !== false ? data : { energyKwh: 0, points: [], days: [] };
-  const points = energyData.points || [];
-  energyView = {
-    t0: points.length ? points[0].t : from,
-    t1: points.length ? points[points.length - 1].t : to,
-  };
-  paintEnergy();
+  const desk = document.querySelector(".energy-desk");
+  if (energyAbort) energyAbort.abort();
+  energyAbort = new AbortController();
+  const seq = energyAbort;
+  if (desk) desk.classList.add("is-loading");
+  try {
+    const data = await fetch(`/api/energy?from=${from}&to=${to}&t=${force ? Date.now() : ""}`, { signal: seq.signal }).then((item) => item.json());
+    if (energyAbort !== seq) return;
+    energyData = data && data.ok !== false ? data : { energyKwh: 0, points: [], days: [] };
+    const points = energyData.points || [];
+    energyView = {
+      t0: points.length ? points[0].t : from,
+      t1: points.length ? points[points.length - 1].t : to,
+    };
+    paintEnergy();
+  } catch (err) {
+    if (err && err.name === "AbortError") return;
+    if (energyAbort !== seq) return;
+    energyData = { energyKwh: 0, points: [], days: [] };
+    paintEnergy();
+  } finally {
+    if (energyAbort === seq && desk) desk.classList.remove("is-loading");
+  }
 }
 
 function paintEnergy() {
@@ -2908,12 +3202,13 @@ function hoverEnergy(event) {
   energyHoverX = event.clientX - rect.left;
   const point = nearestPoint(plot, energyHoverX);
   if (point) {
+    const stamp = clockDateTime(point.t);
     const kwh = energyAt(point.t);
-    showPlotTip(event, `<strong>${escapeHtml(clockTime(point.t))}</strong>
+    showPlotTip(event, `<strong>${escapeHtml(stamp)}</strong>
       <div><i style="background:#ff7a3d"></i>Мощность <b>${escapeHtml(String(point.w))}</b> Вт</div>
       <div><i style="background:#e0b06a"></i>С начала <b>${escapeHtml(fmtKwh(kwh))}</b> кВт·ч</div>
       ${point.on ? '<div class="boost">на батарее</div>' : ""}`);
-    $("enNote").textContent = `${clockTime(point.t)}  ·  ${point.w} Вт${point.on ? "  ·  батарея" : ""}`;
+    $("enNote").textContent = `${stamp}  ·  ${point.w} Вт${point.on ? "  ·  батарея" : ""}`;
   }
   drawEnergyChart();
 }

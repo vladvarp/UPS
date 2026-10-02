@@ -14,6 +14,29 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; color-scheme: dark; }
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(77, 226, 255, 0.35) rgba(7, 11, 16, 0.35);
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: rgba(7, 11, 16, 0.45);
+  border-radius: 99px;
+}
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(77, 226, 255, 0.55), rgba(77, 226, 255, 0.22));
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 99px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(77, 226, 255, 0.7);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner { background: transparent; }
 body {
   padding: 16px 14px calc(28px + env(safe-area-inset-bottom));
   color: var(--text);
@@ -100,8 +123,21 @@ h1 { font-size: clamp(22px, 4vw, 34px); letter-spacing: .04em; }
   color: var(--muted); font-size: 12px;
 }
 .hint { color: var(--muted); font-size: 12px; }
-.chart-box { min-height: 220px; }
-canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
+.split { display: grid; gap: 14px; }
+.chart-box, .events-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+}
+.chart-box h2, .events-card h2 { flex: none; }
+.chart-box canvas {
+  flex: 1;
+  width: 100%;
+  min-height: 180px;
+  height: auto;
+  display: block;
+  margin-top: 10px;
+}
 .list { display: grid; gap: 8px; margin-top: 12px; }
 .row {
   display: grid; grid-template-columns: 12px 78px 1fr; gap: 10px; align-items: start;
@@ -116,6 +152,19 @@ canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
 .row time { color: var(--muted); font: 13px/1.4 var(--mono); }
 .row div { color: var(--text); }
 .empty { color: var(--muted); padding: 20px; text-align: center; }
+.events-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(42vh, 420px);
+}
+.events-card h2 { flex: none; }
+.events-card .list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .days { display: grid; gap: 10px; margin-top: 12px; }
 .day { display: grid; gap: 8px; }
 .day strong { font-size: 18px; }
@@ -126,9 +175,15 @@ canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
 .hidden { display: none !important; }
 @media (min-width: 840px) {
   body { padding: 24px 28px 44px; }
-  canvas { height: 280px; }
-  .chart-box { min-height: 280px; }
-  .split { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; align-items: start; }
+  .split {
+    grid-template-columns: 1.15fr .85fr;
+    align-items: stretch;
+  }
+  .chart-box, .events-card {
+    height: min(52vh, 520px);
+    max-height: min(52vh, 520px);
+    min-height: 0;
+  }
 }
 @media (max-width: 640px) {
   button, input[type="date"], input[type="time"] { min-height: 44px; }
@@ -189,8 +244,8 @@ canvas { width: 100%; height: 220px; display: block; margin-top: 10px; }
       <h2 id="chartTitle">График</h2>
       <canvas id="chart" height="280"></canvas>
     </article>
-    <article class="card">
-      <h2>События</h2>
+    <article class="card events-card">
+      <h2 id="eventsTitle">События</h2>
       <div class="list" id="events"></div>
     </article>
   </section>
@@ -589,6 +644,8 @@ function drawSummary(ctx, width, height) {
 
 function paintEvents(items) {
   const filtered = items.filter((item) => inDayRange(item.t) && kindMatch(item.code));
+  const title = document.getElementById("eventsTitle");
+  if (title) title.textContent = filtered.length ? ("События · " + filtered.length) : "События";
   const box = document.getElementById("events");
   if (!filtered.length) {
     box.innerHTML = '<p class="empty">Событий нет</p>';
@@ -607,6 +664,8 @@ function paintSummaryEvents() {
     });
   });
   items.sort((a, b) => (b.t || 0) - (a.t || 0));
+  const title = document.getElementById("eventsTitle");
+  if (title) title.textContent = items.length ? ("События · " + items.length) : "События";
   const box = document.getElementById("events");
   if (!items.length) {
     box.innerHTML = '<p class="empty">Важных событий пока нет</p>';

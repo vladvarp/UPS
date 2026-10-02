@@ -65,6 +65,8 @@ class ReportMathTests(unittest.TestCase):
         self.assertIn("кВт", html)
         self.assertNotIn("src=\"http", html)
         self.assertIn("7 дней", html)
+        self.assertLess(html.index('id="events"'), html.index('id="daysCard"'))
+        self.assertIn("::-webkit-scrollbar", html)
 
     def test_one_kilowatt_for_one_hour_is_one_kwh(self):
         start = 1_700_000_000.0
@@ -107,6 +109,45 @@ class ReportMathTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertLessEqual(len(payload["points"]), 480)
         self.assertGreater(payload["energyKwh"], 0)
+
+    def test_energy_bucket_step_grows_with_span(self):
+        start = 1_700_000_000.0
+        self.assertEqual(reports.energy_bucket_step(start, start + 3600), 0)
+        self.assertEqual(reports.energy_bucket_step(start, start + 10 * 3600), 15)
+        self.assertEqual(reports.energy_bucket_step(start, start + 10 * 86400), 60)
+
+    def test_bucketed_energy_stays_close_to_raw(self):
+        start = 1_700_000_000.0
+        rows = [(start + index * 2, 50, 0) for index in range(1801)]
+        full = reports.energy_report(rows, 2.0, start, start + 3600)
+        buckets = [(start + index * 60, 50, 0, 50) for index in range(61)]
+        coarse = reports.energy_report(buckets, 2.0, start, start + 3600)
+        self.assertAlmostEqual(full["energyKwh"], 1.0, places=2)
+        self.assertAlmostEqual(coarse["energyKwh"], full["energyKwh"], delta=0.03)
+        self.assertEqual(coarse["peakW"], 1000)
+
+    def test_energy_from_db_uses_sql_buckets(self):
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            "CREATE TABLE readings (ts REAL, load_pct REAL, on_battery INTEGER, source TEXT)"
+        )
+        start = 1_700_000_000.0
+        end = start + 10 * 86400
+        rows = []
+        ts = start
+        while ts < end:
+            rows.append((ts, 50, 0, "live"))
+            ts += 120
+        conn.executemany("INSERT INTO readings VALUES (?,?,?,?)", rows)
+        conn.commit()
+        payload = reports.energy_from_db(conn, 2.0, start, end)
+        self.assertTrue(payload["ok"])
+        self.assertGreater(payload["energyKwh"], 200)
+        self.assertLessEqual(len(payload["points"]), 480)
+        self.assertGreaterEqual(len(payload["days"]), 9)
+        conn.close()
 
     def test_old_day_json_gets_energy_from_points(self):
         points = [{"m": index, "load": 50, "on": 0} for index in range(61)]

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=83">
+  <link rel="stylesheet" href="/app.css?v=87">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -222,12 +222,23 @@
           <button type="button" data-series="temp">Температура</button>
         </div>
       </div>
+      <div class="chart-tools">
+        <div class="chart-stats" id="chartStats"></div>
+        <div class="spark-nav">
+          <button type="button" class="spark-btn" id="chartPanLeft" title="Назад" aria-label="Назад">‹</button>
+          <button type="button" class="spark-btn" id="chartZoomOut" title="Мельче" aria-label="Мельче">−</button>
+          <span id="chartRangeLabel">1 час</span>
+          <button type="button" class="spark-btn" id="chartZoomIn" title="Крупнее" aria-label="Крупнее">+</button>
+          <button type="button" class="spark-btn" id="chartPanRight" title="Вперёд" aria-label="Вперёд">›</button>
+          <button type="button" class="spark-btn accent" id="chartReset" hidden>Сейчас</button>
+        </div>
+      </div>
       <div class="chart-card">
         <div class="chart-legend" id="chartLegend"></div>
         <canvas id="chart" data-h="460" height="460"></canvas>
         <div class="chart-tip" id="chartTip">Наведите курсор — увидите точные значения</div>
       </div>
-      <p class="chart-help">Колёсико меняет масштаб по времени. Клик по легенде скрывает линию.</p>
+      <p class="chart-help">Колёсико — масштаб по времени. Перетаскивание — сдвиг. Легенда скрывает линию. Статистика считается по видимому участку.</p>
     </section>
 
     <section class="view" id="view-log" data-view="log">
@@ -644,6 +655,6 @@
   </div>
   <div class="toast" id="toast" hidden></div>
   <div class="plot-tip" id="plotTip" hidden></div>
-  <script src="/app.js?v=83"></script>
+  <script src="/app.js?v=87"></script>
 </body>
 </html>

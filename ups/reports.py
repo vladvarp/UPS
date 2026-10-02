@@ -416,13 +416,59 @@ def upgrade_day_energy(conn, day: dict, kva: float | None = None) -> dict:
     return upgraded
 
 
+def energy_bucket_step(start: float, end: float) -> float:
+    span = max(0.0, float(end) - float(start))
+    if span <= 8 * 3600:
+        return 0.0
+    if span <= 3 * 86400:
+        return 15.0
+    return 60.0
+
+
+def energy_from_db(conn, kva: float, start: float, end: float) -> dict:
+    lo = float(start)
+    hi = float(end)
+    step = energy_bucket_step(lo, hi)
+    if step <= 0:
+        rows = conn.execute(
+            """
+            SELECT ts, load_pct, on_battery FROM readings
+            WHERE ts >= ? AND ts < ? AND source = 'live'
+            ORDER BY ts
+            """,
+            (lo, hi),
+        )
+    else:
+        rows = conn.execute(
+            """
+            SELECT CAST(ts / ? AS INTEGER) * ?,
+                   AVG(load_pct),
+                   CASE WHEN AVG(CAST(on_battery AS REAL)) >= 0.5 THEN 1 ELSE 0 END,
+                   MAX(load_pct)
+            FROM readings
+            WHERE ts >= ? AND ts < ? AND source = 'live'
+              AND load_pct IS NOT NULL
+            GROUP BY CAST(ts / ? AS INTEGER)
+            ORDER BY 1
+            """,
+            (step, step, lo, hi, step),
+        )
+    return energy_report(rows, kva, lo, hi)
+
+
 def energy_report(rows, kva: float, start: float, end: float) -> dict:
     rating = normalize_kva(kva)
     lo = float(start)
     hi = float(end)
-    stats = energy_from_samples(rows, rating, lo, hi)
-    by_day: dict[str, list] = {}
-    chart: list[tuple[float, float, bool]] = []
+    span = max(1e-3, hi - lo)
+    chart_limit = 480
+    total = {"energy": 0.0, "counted": 0.0, "energy_batt": 0.0, "on_sec": 0.0}
+    days_acc: dict[str, dict] = {}
+    buckets: dict[int, tuple[float, float, bool]] = {}
+    prev: tuple[float, float, bool] | None = None
+    peak = None
+    samples = 0
+    watt_sum = 0.0
     for row in rows or []:
         parsed = _row_sample(row)
         if parsed is None:
@@ -433,21 +479,70 @@ def energy_report(rows, kva: float, start: float, end: float) -> dict:
         watts = load_watts(load, rating)
         if watts is None:
             continue
-        chart.append((ts, float(watts), on_batt))
+        watts = float(watts)
+        peak_load = load
+        if not isinstance(row, dict):
+            seq = tuple(row)
+            if len(seq) == 4 and seq[3] is not None:
+                peak_load = seq[3]
+        peak_w = load_watts(peak_load, rating)
+        if peak_w is not None:
+            peak_w = float(peak_w)
+            if peak is None or peak_w > peak:
+                peak = peak_w
+        samples += 1
+        watt_sum += watts
+        shown = peak_w if peak_w is not None else watts
+        idx = min(chart_limit - 1, int((ts - lo) / span * (chart_limit - 1)))
+        held = buckets.get(idx)
+        if held is None or shown > held[1]:
+            buckets[idx] = (ts, shown, on_batt)
         stamp = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-        by_day.setdefault(stamp, []).append((ts, load, on_batt))
+        day = days_acc.get(stamp)
+        if day is None:
+            day = {
+                "energy": 0.0, "counted": 0.0, "energy_batt": 0.0, "on_sec": 0.0,
+                "peak": shown, "samples": 0, "watt_sum": 0.0, "prev": None,
+            }
+            days_acc[stamp] = day
+        day["samples"] += 1
+        day["watt_sum"] += watts
+        if shown > day["peak"]:
+            day["peak"] = shown
+        if prev is not None:
+            _add_slice(total, prev[0], prev[1], prev[2], ts, watts)
+        if day["prev"] is not None:
+            _add_slice(day, day["prev"][0], day["prev"][1], day["prev"][2], ts, watts)
+        day["prev"] = (ts, watts, on_batt)
+        prev = (ts, watts, on_batt)
+    extra = watt_sum / samples if samples else None
+    stats = _pack_energy(
+        total["energy"], total["energy_batt"], total["counted"], total["on_sec"],
+        peak, samples, lo, hi, extra,
+    )
     days = []
-    for stamp in sorted(by_day):
+    for stamp in sorted(days_acc):
+        day = days_acc[stamp]
         day_start, day_end = day_bounds(stamp)
-        item = energy_from_samples(by_day[stamp], rating, max(day_start, lo), min(day_end, hi))
-        days.append({"date": stamp, **item})
+        day_extra = day["watt_sum"] / day["samples"] if day["samples"] else None
+        days.append({
+            "date": stamp,
+            **_pack_energy(
+                day["energy"], day["energy_batt"], day["counted"], day["on_sec"],
+                day["peak"], day["samples"], max(day_start, lo), min(day_end, hi), day_extra,
+            ),
+        })
+    points = [
+        {"t": ts, "w": round(watts), "on": int(on_batt)}
+        for ts, watts, on_batt in (buckets[idx] for idx in sorted(buckets))
+    ]
     return {
         "ok": True,
         "from": lo,
         "to": hi,
         "kva": rating,
         **stats,
-        "points": _chart_points(chart),
+        "points": points,
         "days": days,
     }
 
@@ -480,16 +575,34 @@ def _energy_of(
         if on0:
             energy_batt += slice_kwh
             on_sec += dt
+    extra = None
+    if counted <= 0 and samples:
+        extra = sum(item[1] for item in samples) / len(samples)
+    wall_start, wall_end = start, end
+    if (wall_start is None or wall_end is None) and len(samples) >= 2:
+        wall_start, wall_end = samples[0][0], samples[-1][0]
+    return _pack_energy(energy, energy_batt, counted, on_sec, peak, len(samples), wall_start, wall_end, extra)
+
+
+def _pack_energy(
+    energy: float,
+    energy_batt: float,
+    counted: float,
+    on_sec: float,
+    peak: float | None,
+    samples: int,
+    start: float | None,
+    end: float | None,
+    extra_avg: float | None = None,
+) -> dict:
     wall = 0.0
     if start is not None and end is not None and end > start:
         wall = end - start
-    elif len(samples) >= 2:
-        wall = samples[-1][0] - samples[0][0]
     avg = None
     if counted > 0:
         avg = energy * 1000.0 / (counted / 3600.0)
-    elif samples:
-        avg = sum(item[1] for item in samples) / len(samples)
+    elif extra_avg is not None:
+        avg = extra_avg
     return {
         "energyKwh": round(energy, 3),
         "energyKwhBattery": round(energy_batt, 3),
@@ -497,9 +610,22 @@ def _energy_of(
         "avgW": round(avg) if avg is not None else None,
         "peakW": round(peak) if peak is not None else None,
         "hours": round(wall / 3600.0, 2) if wall else 0,
-        "samples": len(samples),
+        "samples": samples,
         "onBatteryMinutes": int(round(on_sec / 60.0)),
     }
+
+
+def _add_slice(acc: dict, t0: float, w0: float, on0: bool, t1: float, w1: float, gap: float = ENERGY_MAX_GAP) -> None:
+    dt = t1 - t0
+    if dt <= 0:
+        return
+    dt = min(dt, gap)
+    slice_kwh = ((w0 + w1) / 2.0) * (dt / 3600.0) / 1000.0
+    acc["energy"] += slice_kwh
+    acc["counted"] += dt
+    if on0:
+        acc["energy_batt"] += slice_kwh
+        acc["on_sec"] += dt
 
 
 def _row_sample(row) -> tuple[float, object, bool] | None:
