@@ -258,6 +258,7 @@ def battery_low_active(
 
 
 CHARGE_REARM = 97.0
+CHARGE_HOLD = 10.0
 
 
 def charge_recovered(
@@ -267,12 +268,15 @@ def charge_recovered(
     quiet: bool,
     *,
     rearm: float = CHARGE_REARM,
+    loose: bool = False,
 ) -> tuple[bool, bool]:
-    """Arm after a dip below 97%; fire once at 100% on mains.
+    """Arm after a dip below 97%; become ready at 100% on mains.
 
-    After mains↔battery the float jump is ignored (`quiet`). Startup at 100%
-    does not fire because armed starts false.
+    Caller waits `CHARGE_HOLD` seconds at ready before notifying. A pack
+    removal (`loose`) or leaving 100% cancels. Quiet covers mains↔battery.
     """
+    if loose:
+        return False, False
     if quiet or percent is None:
         return armed, False
     if percent < rearm:
@@ -280,7 +284,7 @@ def charge_recovered(
     if on_battery:
         return armed, False
     if percent >= 100 and armed:
-        return False, True
+        return True, True
     return armed, False
 
 
@@ -410,6 +414,13 @@ def stabilizer_delta(input_v, output_v):
         return None
 
 
+def stabilizer_edge(was_active: bool, active: bool, prev_dir=None, new_dir=None) -> bool:
+    """True on AVR engage, release, or boost↔buck — pack voltage often blips."""
+    if bool(active) != bool(was_active):
+        return True
+    return bool(active and prev_dir and new_dir and prev_dir != new_dir)
+
+
 def stabilizer_dir(input_v, output_v, on_battery: bool, previous: bool = False) -> str | None:
     if not battery_boost_active(input_v, output_v, on_battery, previous):
         return None
@@ -433,6 +444,17 @@ def load_watts(load_pct: float | None, kva: float | None) -> int | None:
         return max(0, int(round(float(kva) * 10 * float(load_pct))))
     except (TypeError, ValueError):
         return None
+
+
+def pack_voltage_unsettled(values: list[float], min_span: float = 1.8) -> bool:
+    """Pack voltage already swinging — do not treat 100% as a real full charge yet.
+
+    Loose detection needs several samples; a 10 s hold alone can lose that race.
+    """
+    recent = values[-8:]
+    if len(recent) < 2:
+        return False
+    return max(recent) - min(recent) >= min_span
 
 
 def battery_voltage_chaotic(values: list[float], min_span: float = 1.8, min_reversals: int = 4) -> bool:

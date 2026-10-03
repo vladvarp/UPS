@@ -7,10 +7,12 @@ from ups.protocol import (
     battery_boost_active,
     battery_low_active,
     stabilizer_dir,
+    stabilizer_edge,
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
     charge_recovered,
+    pack_voltage_unsettled,
     load_watts,
     mains_voltage_active,
     mode_label,
@@ -96,20 +98,34 @@ class BatteryTests(unittest.TestCase):
         self.assertFalse(battery_low_active(21.0, 2, False, 11.1, True))
 
     def test_charge_recovered_fires_at_full_after_a_dip(self):
-        armed, fire = charge_recovered(92, False, False, False)
+        armed, ready = charge_recovered(92, False, False, False)
         self.assertTrue(armed)
-        self.assertFalse(fire)
-        armed, fire = charge_recovered(100, False, True, False)
+        self.assertFalse(ready)
+        armed, ready = charge_recovered(100, False, True, False)
+        self.assertTrue(armed)
+        self.assertTrue(ready)
+        armed, ready = charge_recovered(100, False, False, False)
+        self.assertFalse(ready)
+        armed, ready = charge_recovered(100, False, True, True)
+        self.assertTrue(armed)
+        self.assertFalse(ready)
+        armed, ready = charge_recovered(90, True, False, False)
+        self.assertTrue(armed)
+        self.assertFalse(ready)
+        armed, ready = charge_recovered(100, False, True, False, loose=True)
         self.assertFalse(armed)
-        self.assertTrue(fire)
-        armed, fire = charge_recovered(100, False, False, False)
-        self.assertFalse(fire)
-        armed, fire = charge_recovered(100, False, True, True)
+        self.assertFalse(ready)
+        armed, ready = charge_recovered(80, False, False, False, loose=True)
+        self.assertFalse(armed)
+        self.assertFalse(ready)
+        armed, ready = charge_recovered(99, False, True, False)
         self.assertTrue(armed)
-        self.assertFalse(fire)
-        armed, fire = charge_recovered(90, True, False, False)
-        self.assertTrue(armed)
-        self.assertFalse(fire)
+        self.assertFalse(ready)
+
+    def test_charge_hold_is_ten_seconds(self):
+        from ups.protocol import CHARGE_HOLD
+
+        self.assertEqual(CHARGE_HOLD, 10.0)
 
     def test_q1_flag_and_low_voltage_validate(self):
         clean, error = _validate({"q1_battery_low": False, "low_voltage": 11.1})
@@ -135,6 +151,11 @@ class BatteryTests(unittest.TestCase):
     def test_stable_pack_is_not_chaotic(self):
         values = [26.6, 26.7, 26.6, 26.5, 26.6, 26.7, 26.6, 26.6, 26.5]
         self.assertFalse(battery_voltage_chaotic(values))
+        self.assertFalse(pack_voltage_unsettled(values))
+
+    def test_early_pack_jump_is_unsettled(self):
+        self.assertTrue(pack_voltage_unsettled([26.6, 22.0]))
+        self.assertFalse(pack_voltage_unsettled([26.6]))
 
     def test_jumping_pack_is_chaotic(self):
         values = [26.4, 22.1, 27.8, 19.4, 28.1, 18.0, 27.0, 20.2, 26.9]
@@ -227,6 +248,13 @@ class VoltageAlertTests(unittest.TestCase):
         self.assertTrue(battery_boost_active(237, 221, False, True))
         self.assertFalse(battery_boost_active(235, 221, False, True))
         self.assertEqual(stabilizer_dir(248, 221, False, False), "down")
+
+    def test_stabilizer_edge_covers_engage_release_and_flip(self):
+        self.assertFalse(stabilizer_edge(False, False, None, None))
+        self.assertTrue(stabilizer_edge(False, True, None, "up"))
+        self.assertTrue(stabilizer_edge(True, False, "up", None))
+        self.assertFalse(stabilizer_edge(True, True, "up", "up"))
+        self.assertTrue(stabilizer_edge(True, True, "up", "down"))
 
     def test_voltage_order_is_checked(self):
         clean, error = _validate({"volt_low": 240, "volt_high": 200, "volt_crit_low": 180, "volt_crit_high": 250})

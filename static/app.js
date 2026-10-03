@@ -13,7 +13,7 @@ let historyReq = 0;
 let chartHistTimer = 0;
 let energyAbort = null;
 let sparkHoverX = null;
-let sparkOn = { in: true, out: true };
+let sparkOn = { in: true, out: true, batt: true };
 let sparkView = { window: 900, follow: true, end: 0 };
 let sparkEase = { units: {}, live: {}, shown: {}, lastT: 0, at: 0 };
 let sparkDrag = null;
@@ -99,7 +99,13 @@ const SERIES = {
     ],
   },
   load: { unit: "Вт", lines: [{ key: "load", color: LINE_COLORS.load, name: "нагрузка" }] },
-  charge: { unit: "%", lines: [{ key: "soc", color: LINE_COLORS.soc, name: "заряд" }] },
+  charge: {
+    unit: "%",
+    lines: [
+      { key: "soc", color: LINE_COLORS.soc, name: "заряд", unit: "%" },
+      { key: "batt", color: LINE_COLORS.batt, name: "батарея", unit: "В", scale: "акб" },
+    ],
+  },
   freq: { unit: "Гц", lines: [{ key: "hz", color: LINE_COLORS.hz, name: "частота" }] },
   temp: { unit: "°C", lines: [{ key: "temp", color: LINE_COLORS.temp, name: "температура" }] },
 };
@@ -170,6 +176,7 @@ const SPARK_LINES = [
   { key: "in", color: LINE_COLORS.in, name: "вход", unit: "В" },
   { key: "out", color: LINE_COLORS.out, name: "выход", unit: "В" },
   { key: "load", color: LINE_COLORS.load, name: "нагрузка", unit: "Вт" },
+  { key: "batt", color: LINE_COLORS.batt, name: "батарея", unit: "В", scale: "акб" },
   { key: "soc", color: LINE_COLORS.soc, name: "заряд", unit: "%" },
   { key: "hz", color: LINE_COLORS.hz, name: "частота", unit: "Гц" },
   { key: "temp", color: LINE_COLORS.temp, name: "температура", unit: "°C" },
@@ -883,6 +890,8 @@ function applyChartPrefs(settings) {
       sparkOn.in = true;
       sparkOn.out = true;
     }
+    const onlyMains = lines.length > 0 && lines.every((key) => key === "in" || key === "out");
+    if (onlyMains) sparkOn.batt = true;
   }
   const win = Number(settings.spark_window);
   if (win >= 30 && win <= 86400) sparkView.window = win;
@@ -1976,6 +1985,8 @@ function drawChart(refreshLegend = true) {
     gap: gapLimit(data.length ? data : points),
     t0: span.start,
     t1: span.end,
+    perUnit: series === "charge",
+    ease: false,
   });
 }
 
@@ -2234,28 +2245,43 @@ function fitAxis(min, max, unit) {
   return { min, max };
 }
 
-function lineScale(data, lines) {
+function axisDigits(unit, fallback) {
+  if (unit === "%" || unit === "Вт") return 0;
+  if (unit === "В" || unit === "Гц" || unit === "°C") return 1;
+  return fallback ?? 1;
+}
+
+function lineScaleKey(line) {
+  return (line && (line.scale || line.unit)) || "";
+}
+
+function lineScale(data, lines, ease) {
   const groups = {};
   lines.forEach((line) => {
-    const unit = line.unit || "";
-    if (!groups[unit]) groups[unit] = { min: Infinity, max: -Infinity };
+    const key = lineScaleKey(line);
+    if (!groups[key]) groups[key] = { min: Infinity, max: -Infinity, unit: line.unit || "" };
   });
   data.forEach((point) => {
     lines.forEach((line) => {
       const value = point[line.key];
       if (value == null) return;
-      const group = groups[line.unit || ""];
+      const group = groups[lineScaleKey(line)];
       group.min = Math.min(group.min, value);
       group.max = Math.max(group.max, value);
     });
   });
-  Object.keys(groups).forEach((unit) => {
-    const group = groups[unit];
-    const fitted = fitAxis(group.min, group.max, unit);
-    const eased = sparkEase.units[unit] || { min: fitted.min, max: fitted.max };
+  Object.keys(groups).forEach((key) => {
+    const group = groups[key];
+    const fitted = fitAxis(group.min, group.max, group.unit);
+    if (ease === false) {
+      group.min = fitted.min;
+      group.max = fitted.max;
+      return;
+    }
+    const eased = sparkEase.units[key] || { min: fitted.min, max: fitted.max };
     eased.min = easeToward(eased.min, fitted.min, 0.18);
     eased.max = easeToward(eased.max, fitted.max, 0.18);
-    sparkEase.units[unit] = eased;
+    sparkEase.units[key] = eased;
     group.min = eased.min;
     group.max = eased.max;
   });
@@ -2291,13 +2317,13 @@ function fillBoostBands(ctx, data, lines, xOf, yOfValue, gap) {
       ctx.beginPath();
       run.forEach((point, index) => {
         const x = xOf(point.t);
-        const y = yOfValue(point.out, outLine.unit);
+        const y = yOfValue(point.out, lineScaleKey(outLine));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
       for (let i = run.length - 1; i >= 0; i -= 1) {
         const point = run[i];
-        ctx.lineTo(xOf(point.t), yOfValue(point.in, inLine.unit));
+        ctx.lineTo(xOf(point.t), yOfValue(point.in, lineScaleKey(inLine)));
       }
       ctx.closePath();
       ctx.fillStyle = "rgba(224, 176, 106, 0.32)";
@@ -2416,19 +2442,26 @@ function drawLines(canvas, data, lines, options) {
     canvas._plot = null;
     return;
   }
-  const scales = options.perUnit ? lineScale(data, lines) : null;
+  const scales = options.perUnit ? lineScale(data, lines, options.ease) : null;
   let min = values[0];
   let max = values[0];
   for (let i = 1; i < values.length; i += 1) {
     if (values[i] < min) min = values[i];
     if (values[i] > max) max = values[i];
   }
-  const fitted = fitAxis(min, max, options.unit || (lines[0] && lines[0].unit) || "");
+  const leftUnit = options.unit || (lines[0] && lines[0].unit) || "";
+  const fitted = fitAxis(min, max, leftUnit);
   min = fitted.min;
   max = fitted.max;
+  const scaleLeft = scales && scales[leftUnit] ? scales[leftUnit] : { min, max };
+  const rightUnit = scales
+    ? Object.keys(scales).find((unit) => unit && unit !== leftUnit && Number.isFinite(scales[unit].min))
+    : "";
+  const scaleRight = rightUnit ? scales[rightUnit] : null;
   const left = options.axis ? 58 : pad;
+  const rightPad = options.axis && scaleRight ? 50 : 16;
   const bottom = options.axis || options.ticks ? 22 : 10;
-  const plotW = width - left - 16;
+  const plotW = width - left - rightPad;
   const plotH = height - pad - bottom;
   const t0 = options.t0 != null ? options.t0 : data[0].t;
   const t1 = options.t1 != null ? options.t1 : data[data.length - 1].t;
@@ -2436,26 +2469,34 @@ function drawLines(canvas, data, lines, options) {
   const xOf = (t) => left + ((t - t0) / tSpan) * plotW;
   const yOfValue = (value, unit) => {
     if (scales) {
-      const group = scales[unit || ""] || { min, max };
+      const group = scales[unit || ""] || scaleLeft;
       const span = group.max - group.min || 1;
       return pad + ((group.max - value) / span) * plotH;
     }
     return pad + ((max - value) / (max - min || 1)) * plotH;
   };
-  const yOf = (value) => yOfValue(value, lines[0] && lines[0].unit);
+  const yOf = (value) => yOfValue(value, lineScaleKey(lines[0]));
   ctx.strokeStyle = "rgba(232,220,196,0.10)";
   ctx.lineWidth = 1;
   ctx.fillStyle = "#93a79a";
   ctx.font = "11px Cascadia Mono, Consolas, monospace";
+  const leftDigits = axisDigits(leftUnit, digits);
+  const rightDigits = axisDigits(rightUnit, 1);
   for (let i = 0; i <= 4; i += 1) {
     const y = pad + (plotH * i) / 4;
     ctx.beginPath();
     ctx.moveTo(left, y);
-    ctx.lineTo(width - 16, y);
+    ctx.lineTo(width - rightPad, y);
     ctx.stroke();
     if (options.axis) {
-      const value = max - ((max - min) * i) / 4;
-      ctx.fillText(value.toFixed(digits), 6, y + 4);
+      const value = scaleLeft.max - ((scaleLeft.max - scaleLeft.min) * i) / 4;
+      ctx.fillText(value.toFixed(leftDigits), 6, y + 4);
+      if (scaleRight) {
+        const other = scaleRight.max - ((scaleRight.max - scaleRight.min) * i) / 4;
+        ctx.fillStyle = LINE_COLORS.batt;
+        ctx.fillText(other.toFixed(rightDigits), width - rightPad + 6, y + 4);
+        ctx.fillStyle = "#93a79a";
+      }
     }
   }
   if (options.axis || options.ticks) {
@@ -2474,7 +2515,7 @@ function drawLines(canvas, data, lines, options) {
       if (chunk.length < 2) return;
       const pts = chunk.map((point) => ({
         x: xOf(point.t),
-        y: yOfValue(point[line.key], line.unit),
+        y: yOfValue(point[line.key], lineScaleKey(line)),
       }));
       const first = pts[0];
       const last = pts[pts.length - 1];
@@ -2514,7 +2555,7 @@ function drawLines(canvas, data, lines, options) {
   const plot = {
     data, lines, min, max, left, pad, plotW, plotH,
     t0, t1, unit: options.unit || "", xOf,
-    yOf: (value, unit) => yOfValue(value, unit),
+    yOf: (value, unit, line) => yOfValue(value, line ? lineScaleKey(line) : unit),
   };
   canvas._plot = plot;
   const hover = canvas.id === "chart" ? chartHoverX : sparkHoverX;
@@ -2550,7 +2591,7 @@ function paintCrosshair(ctx, plot, x) {
   plot.lines.forEach((line) => {
     const value = point[line.key];
     if (value == null) return;
-    const y = plot.yOf(value, line.unit);
+    const y = plot.yOf(value, line.unit, line);
     ctx.fillStyle = line.color;
     ctx.beginPath();
     ctx.arc(px, y, 4.5, 0, Math.PI * 2);
@@ -3502,16 +3543,23 @@ function syncAlerts(reading, snapshot) {
     if (current) openAlert(current, { keep: true });
     return;
   }
-  if (newest && Number(newest.t) > lastEventT) {
-    lastEventT = Number(newest.t);
-    openAlert(newest);
+  const fresh = events
+    .filter((item) => Number(item.t) > lastEventT)
+    .sort((a, b) => Number(a.t) - Number(b.t));
+  if (fresh.length) {
+    lastEventT = Number(fresh[fresh.length - 1].t);
+    fresh.forEach((item, index) => {
+      if (index === fresh.length - 1) openAlert(item);
+      else pushNotice(item);
+    });
+  } else {
+    const key = alarmKey(reading);
+    if (key && key !== lastAlarmKey) {
+      const current = alarmPayload(reading);
+      if (current) openAlert(current);
+    }
   }
-  const key = alarmKey(reading);
-  if (key && key !== lastAlarmKey) {
-    const current = alarmPayload(reading);
-    if (current) openAlert(current);
-  }
-  lastAlarmKey = key;
+  lastAlarmKey = alarmKey(reading);
 }
 
 function noticeTone(item) {
@@ -3524,11 +3572,13 @@ function noticeTone(item) {
 
 function pushNotice(item) {
   const code = item.code || "";
+  const t = Number(item.t) || Date.now() / 1000;
+  if (notices.some((row) => row.code === code && Math.abs((row.t || 0) - t) < 2)) return;
   notices.unshift({
     code,
     level: item.level || "",
     message: item.message || "",
-    t: item.t || Date.now() / 1000,
+    t,
     title: ALERT_TITLES[code] || item.title || "Событие UPS",
   });
   notices = notices.slice(0, 40);

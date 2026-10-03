@@ -20,12 +20,15 @@ from ups.protocol import (
     battery_percent,
     battery_voltage_chaotic,
     battery_voltage_stepped,
+    CHARGE_HOLD,
     charge_recovered,
+    pack_voltage_unsettled,
     load_watts,
     mains_present,
     mains_voltage_active,
     battery_boost_active,
     stabilizer_dir,
+    stabilizer_edge,
     mode_label,
     pack_capacity_wh,
     pack_energy_wh,
@@ -99,7 +102,7 @@ DEFAULTS = {
     "telegram_digest": False,
     "telegram_digest_time": "21:00",
     "windows_notify": True,
-    "spark_lines": ["in", "out"],
+    "spark_lines": ["in", "out", "batt"],
     "spark_window": 900,
     "chart_minutes": 60,
     "chart_series": "voltage",
@@ -222,6 +225,7 @@ class Monitor:
         self._events: list[dict] = []
         self._edges: dict[str, bool] = {}
         self._charge_armed = False
+        self._charge_full_since = 0.0
         self._outage_started: float | None = None
         self._shutdown_at: float | None = None
         self._shutdown_sent = False
@@ -1144,7 +1148,22 @@ class Monitor:
             self._shutdown_held = False
         countdown = self._shutdown_countdown(status.on_battery, settings, now)
         mode_changed = bool(self._edges.get("on_battery")) != bool(status.on_battery)
-        if mode_changed:
+        was_boost = bool(self._edges.get("battery_boost"))
+        boosting = battery_boost_active(
+            status.input_v,
+            status.output_v,
+            status.on_battery,
+            was_boost,
+        )
+        boost_dir = stabilizer_dir(
+            status.input_v,
+            status.output_v,
+            status.on_battery,
+            was_boost,
+        )
+        if mode_changed or stabilizer_edge(
+            was_boost, boosting, self._edges.get("stabilizer_dir"), boost_dir
+        ):
             self._arm_pack_quiet(now)
         loose = self._battery_loose(status.battery_v, source == "live")
         swap = None if loose else self._note_pack_swap(source == "live")
@@ -1158,7 +1177,7 @@ class Monitor:
         )
         reading.update(
             {
-                "battery_low": self._resolve_battery_low(status, settings, now),
+                "battery_low": False if loose else self._resolve_battery_low(status, settings, now),
                 "battery_pct": None if percent is None else round(percent, 1),
                 "battery_wh": pack_energy_wh(percent, capacity_wh),
                 "battery_wh_full": capacity_wh,
@@ -1175,18 +1194,8 @@ class Monitor:
                 "voltage_state": volt,
                 "voltage_note": voltage_note(volt, settings),
                 "volt_limits": voltage_limits(settings),
-                "battery_boost": battery_boost_active(
-                    reading.get("input_v"),
-                    reading.get("output_v"),
-                    status.on_battery,
-                    bool(self._edges.get("battery_boost")),
-                ),
-                "stabilizer_dir": stabilizer_dir(
-                    reading.get("input_v"),
-                    reading.get("output_v"),
-                    status.on_battery,
-                    bool(self._edges.get("battery_boost")),
-                ),
+                "battery_boost": boosting,
+                "stabilizer_dir": boost_dir,
                 "updated_at": now,
                 "source": source,
             }
@@ -1298,8 +1307,8 @@ class Monitor:
         )
 
     def _arm_pack_quiet(self, now: float) -> None:
-        # Float charge vs inverter voltage jumps on transfer. That is not a pack swap
-        # and not a disconnected string — drop the mixed window and wait it out.
+        # Mains↔battery and AVR tap changes both kick pack voltage.
+        # That is not a swap and not a disconnected string.
         self._ignore_pack_until = now + 45
         self._batt_samples = []
 
@@ -1362,17 +1371,40 @@ class Monitor:
     def _charge_full_edges(self, reading: dict) -> None:
         now = float(reading.get("updated_at") or time.time())
         quiet = now < self._ignore_pack_until
-        armed, fire = charge_recovered(
+        loose = bool(reading.get("battery_loose"))
+        pulled = loose or self._recent_pack_removed(now)
+        armed, ready = charge_recovered(
             reading.get("battery_pct"),
             bool(reading.get("on_battery")),
             self._charge_armed,
             quiet,
+            loose=pulled,
         )
         self._charge_armed = armed
-        if fire:
-            pct = reading.get("battery_pct")
-            text = "Батарея заряжена · 100%" if pct is None else f"Батарея заряжена · {pct:.0f}%"
-            self._event("ok", "battery_low_clear", text)
+        if pulled or not ready or pack_voltage_unsettled(self._batt_samples):
+            self._charge_full_since = 0.0
+            return
+        if self._charge_full_since <= 0:
+            self._charge_full_since = now
+            return
+        if now - self._charge_full_since < CHARGE_HOLD:
+            return
+        self._charge_full_since = 0.0
+        self._charge_armed = False
+        pct = reading.get("battery_pct")
+        text = "Батарея заряжена · 100%" if pct is None else f"Батарея заряжена · {pct:.0f}%"
+        self._event("ok", "battery_low_clear", text)
+
+    def _recent_pack_removed(self, now: float) -> bool:
+        window = CHARGE_HOLD + 2.0
+        with self._lock:
+            items = list(self._events[-20:])
+        for item in reversed(items):
+            if now - float(item.get("t") or 0) > window:
+                break
+            if item.get("code") == "battery_loose":
+                return True
+        return False
 
     def _boost_edges(self, reading: dict) -> None:
         previous = bool(self._edges.get("battery_boost"))
@@ -1438,6 +1470,8 @@ class Monitor:
         self._pack_swap = None
         self._pack_swap_to = None
         self._ignore_pack_until = 0.0
+        self._charge_armed = False
+        self._charge_full_since = 0.0
 
     def _note(self, direction: str, text: str) -> None:
         line = {"t": time.time(), "dir": direction, "text": " ".join(str(text).split())[:180]}
@@ -1781,7 +1815,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             clean[key] = _clean_telegram_events(value)
             continue
         if key == "spark_lines":
-            allowed = {"in", "out", "load", "soc", "hz", "temp"}
+            allowed = {"in", "out", "load", "batt", "soc", "hz", "temp"}
             lines = [str(item) for item in (value or []) if str(item) in allowed]
             clean[key] = lines or ["in", "out"]
             continue
