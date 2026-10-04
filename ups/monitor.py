@@ -18,7 +18,7 @@ from ups.protocol import (
     ProtocolError,
     battery_low_active,
     battery_percent,
-    battery_voltage_chaotic,
+    battery_loose_active,
     battery_voltage_stepped,
     CHARGE_HOLD,
     charge_recovered,
@@ -1165,7 +1165,11 @@ class Monitor:
             was_boost, boosting, self._edges.get("stabilizer_dir"), boost_dir
         ):
             self._arm_pack_quiet(now)
-        loose = self._battery_loose(status.battery_v, source == "live")
+        loose = self._battery_loose(
+            status.battery_v,
+            source == "live",
+            mains_present(status.input_v, status.on_battery),
+        )
         swap = None if loose else self._note_pack_swap(source == "live")
         reading = status.as_dict()
         volt = voltage_state(reading.get("input_v"), status.on_battery, settings)
@@ -1312,7 +1316,11 @@ class Monitor:
         self._ignore_pack_until = now + 45
         self._batt_samples = []
 
-    def _battery_loose(self, voltage: float | None, live: bool) -> bool:
+    def _battery_loose(self, voltage: float | None, live: bool, on_mains: bool) -> bool:
+        # On inverter the pack is in the circuit — output would die if it came off.
+        # Discharge sag must not look like a disconnected string.
+        if not on_mains:
+            return False
         if not live or voltage is None:
             return bool(self._edges.get("battery_loose"))
         now = time.time()
@@ -1322,7 +1330,7 @@ class Monitor:
             return bool(self._edges.get("battery_loose"))
         self._batt_samples.append(float(voltage))
         self._batt_samples = self._batt_samples[-24:]
-        return battery_voltage_chaotic(self._batt_samples)
+        return battery_loose_active(self._batt_samples, on_mains)
 
     def _note_pack_swap(self, live: bool) -> dict | None:
         now = time.time()

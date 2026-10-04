@@ -457,6 +457,17 @@ def pack_voltage_unsettled(values: list[float], min_span: float = 1.8) -> bool:
     return max(recent) - min(recent) >= min_span
 
 
+def battery_loose_active(values: list[float], on_mains: bool) -> bool:
+    """Disconnected-pack chatter only exists on the charger.
+
+    With no input the inverter is running from the pack — it cannot be off
+    the terminals. Discharge sag is not a loose string.
+    """
+    if not on_mains:
+        return False
+    return battery_voltage_chaotic(values)
+
+
 def battery_voltage_chaotic(values: list[float], min_span: float = 1.8, min_reversals: int = 4) -> bool:
     """True when pack voltage jumps around — typical of a disconnected battery."""
     if len(values) < 8:

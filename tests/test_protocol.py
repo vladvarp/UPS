@@ -9,8 +9,10 @@ from ups.protocol import (
     stabilizer_dir,
     stabilizer_edge,
     battery_percent,
+    battery_loose_active,
     battery_voltage_chaotic,
     battery_voltage_stepped,
+    mains_present,
     charge_recovered,
     pack_voltage_unsettled,
     load_watts,
@@ -189,6 +191,12 @@ class BatteryTests(unittest.TestCase):
         values = [24.4, 24.3, 24.4, 24.5, 24.4, 24.3, 24.2, 24.3, 24.4, 24.3]
         self.assertFalse(battery_voltage_chaotic(values))
         self.assertIsNone(battery_voltage_stepped(values))
+
+    def test_no_input_cannot_be_a_loose_pack(self):
+        jumping = [26.4, 22.1, 27.8, 19.4, 28.1, 18.0, 27.0, 20.2, 26.9]
+        self.assertFalse(mains_present(0, True))
+        self.assertFalse(battery_loose_active(jumping, False))
+        self.assertTrue(battery_loose_active(jumping, True))
 
 
 class VoltageAlertTests(unittest.TestCase):
