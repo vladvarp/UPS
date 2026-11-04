@@ -496,14 +496,23 @@ class TelegramBridge:
     def stop(self) -> None:
         self._stop.set()
         self._stop_live_sessions("Программа UPS остановлена")
+        with self._live_lock:
+            sessions = list(self._live_sessions.items())
+        for chat_id, session in sessions:
+            try:
+                _api(session["token"], "unpinChatMessage", {
+                    "chat_id": chat_id,
+                    "message_id": session["message_id"],
+                }, timeout=3)
+            except TelegramError:
+                pass
         if self._thread:
             self._thread.join(timeout=2)
-        with self._live_lock:
-            sessions = list(self._live_sessions.values())
-        for session in sessions:
+        deadline = time.monotonic() + 5
+        for _chat_id, session in sessions:
             thread = session.get("thread")
             if thread and thread is not threading.current_thread():
-                thread.join(timeout=2)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def configure(self, settings: dict) -> None:
         token = str(settings.get("telegram_token") or "").strip()
@@ -872,6 +881,13 @@ class TelegramBridge:
                     "программа UPS остановлена" if self._stop.is_set() else "остановлена пользователем"
                 )
         finally:
+            try:
+                _api(token, "unpinChatMessage", {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                }, timeout=5)
+            except TelegramError:
+                pass
             final_text = self._host.telegram_live_text() + f"\n\nТрансляция завершена: {reason}."
             try:
                 _api(token, "editMessageText", {
@@ -879,14 +895,7 @@ class TelegramBridge:
                     "message_id": message_id,
                     "text": final_text,
                     "reply_markup": {"inline_keyboard": []},
-                }, timeout=8)
-            except TelegramError:
-                pass
-            try:
-                _api(token, "unpinChatMessage", {
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                }, timeout=8)
+                }, timeout=5)
             except TelegramError:
                 pass
             with self._live_lock:
