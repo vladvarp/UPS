@@ -389,7 +389,7 @@ EVENT_GROUPS = (
 ACTION_GROUPS = (
     ("ПК", ("pc_off", "pc_reboot", "pc_sleep", "pc_hibernate", "cancel_shutdown")),
     ("ПО", ("screenshot", "app_restart")),
-    ("Отчёты", ("status", "events", "day_report", "summary")),
+    ("Отчёты", ("status", "events", "day_report", "summary", "live_view")),
 )
 
 EVENT_TITLES = {
@@ -845,7 +845,10 @@ class TelegramBridge:
                     _api(token, "editMessageText", {
                         "chat_id": chat_id,
                         "message_id": message_id,
-                        "text": self._host.telegram_live_text(),
+                        "text": self._host.telegram_live_text() + (
+                            "\n\nЗакрепить сообщение не удалось: проверьте права бота в чате."
+                            if session.get("pin_error") else ""
+                        ),
                         "reply_markup": {
                             "inline_keyboard": [[{
                                 "text": "Остановить трансляцию",
