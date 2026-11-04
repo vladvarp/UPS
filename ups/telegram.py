@@ -774,6 +774,11 @@ class TelegramBridge:
         except (TypeError, ValueError):
             timeout_minutes = 10
         timeout_seconds = max(60, min(7200, timeout_minutes * 60))
+        try:
+            interval_seconds = int(settings.get("telegram_live_interval", 3))
+        except (TypeError, ValueError):
+            interval_seconds = 3
+        interval_seconds = max(1, min(60, interval_seconds))
         markup = {"inline_keyboard": [[{"text": "Остановить трансляцию", "callback_data": "live:stop"}]]}
         with self._live_lock:
             current = self._live_sessions.get(chat_id)
@@ -810,6 +815,7 @@ class TelegramBridge:
                 "stop": threading.Event(),
                 "started_at": time.monotonic(),
                 "timeout": timeout_seconds,
+                "interval": interval_seconds,
                 "reason": "",
                 "thread": None,
             }
@@ -846,7 +852,8 @@ class TelegramBridge:
         message_id = session["message_id"]
         reason = ""
         try:
-            while not self._stop.is_set() and not stop_event.wait(3):
+            interval = max(1, min(60, int(session.get("interval", 3))))
+            while not self._stop.is_set() and not stop_event.wait(interval):
                 if time.monotonic() - session["started_at"] >= session["timeout"]:
                     reason = "истёк тайм-аут"
                     break
