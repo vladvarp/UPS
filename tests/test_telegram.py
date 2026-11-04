@@ -49,12 +49,20 @@ class TokenTests(unittest.TestCase):
     def test_live_timeout_setting_defaults_and_validates(self):
         from ups.monitor import DEFAULTS
         self.assertEqual(DEFAULTS["telegram_live_timeout"], 10)
-        clean, error = _validate({"telegram_live_timeout": "15"})
+        self.assertEqual(DEFAULTS["telegram_live_interval"], 3)
+        clean, error = _validate({
+            "telegram_live_timeout": "15",
+            "telegram_live_interval": "5",
+        })
         self.assertIsNone(error)
         self.assertEqual(clean["telegram_live_timeout"], 15)
+        self.assertEqual(clean["telegram_live_interval"], 5)
         clean, error = _validate({"telegram_live_timeout": 0})
         self.assertEqual(clean, {})
         self.assertIn("telegram_live_timeout", error or "")
+        clean, error = _validate({"telegram_live_interval": 0})
+        self.assertEqual(clean, {})
+        self.assertIn("telegram_live_interval", error or "")
 
     def test_digest_time_round_trip(self):
         self.assertEqual(parse_clock("8:05"), "08:05")
@@ -201,6 +209,7 @@ class ReportTests(unittest.TestCase):
             def get_settings_raw(self):
                 return {
                     "telegram_live_timeout": 10,
+                    "telegram_live_interval": 5,
                     "telegram_chats": [{"id": 7, "name": "test"}],
                 }
 
@@ -230,6 +239,7 @@ class ReportTests(unittest.TestCase):
             bot._start_live(7)
             session = bot._live_sessions[7]
             self.assertEqual(session["timeout"], 600)
+            self.assertEqual(session["interval"], 5)
             self.assertEqual([method for method, _payload in calls].count("sendMessage"), 1)
             self.assertIn(("pinChatMessage", {"chat_id": 7, "message_id": 77, "disable_notification": True}), calls)
             session["stop"].set()
