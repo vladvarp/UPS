@@ -298,15 +298,16 @@ class ReportTests(unittest.TestCase):
         self.assertFalse(joined.endswith("батарее"))
 
     def test_events_empty(self):
-        self.assertEqual(format_events([]), "*Журнал пуст.*")
+        self.assertEqual(format_events([]), "Журнал пуст.")
 
-    def test_events_use_markdown_and_escape_messages(self):
+    def test_events_keep_readable_plain_text_for_illustrated_card(self):
         text = format_events([
             {"t": 1710000000, "message": "Сеть_пропала *авария*"}
         ])
-        self.assertEqual(text.splitlines()[0], "*Последние события*")
-        self.assertIn("Сеть\\_пропала \\*авария\\*", text)
-        self.assertIn(chr(96), text)
+        self.assertEqual(text.splitlines()[0], "Последние события:")
+        self.assertIn("Сеть_пропала *авария*", text)
+        self.assertNotIn(chr(96), text)
+        self.assertNotIn("\\_", text)
 
     def test_token_is_stripped_from_public_settings(self):
         public = _public_settings({"telegram_token": "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx", "telegram_chats": [{"id": 1, "name": "ivan"}]})
