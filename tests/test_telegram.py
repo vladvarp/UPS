@@ -227,8 +227,10 @@ class ReportTests(unittest.TestCase):
         bot._token = "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         with patch("ups.telegram._api", side_effect=api), patch("ups.telegram.threading.Thread", DummyThread):
             bot._start_live(7)
+            bot._start_live(7)
             session = bot._live_sessions[7]
             self.assertEqual(session["timeout"], 600)
+            self.assertEqual([method for method, _payload in calls].count("sendMessage"), 1)
             self.assertIn(("pinChatMessage", {"chat_id": 7, "message_id": 77, "disable_notification": True}), calls)
             session["stop"].set()
             bot._live_loop(7, session)
