@@ -23,7 +23,9 @@ from ups.telegram import (
     extract_pair_code,
     format_alert,
     format_events,
+    format_day_report,
     format_report,
+    split_telegram_text,
     parse_clock,
     poll_error_fatal,
     public_chat,
@@ -43,6 +45,16 @@ class TokenTests(unittest.TestCase):
         clean, error = _validate({"telegram_token": "abc"})
         self.assertIn("Токен", error or "")
         self.assertEqual(clean, {})
+
+    def test_live_timeout_setting_defaults_and_validates(self):
+        from ups.monitor import DEFAULTS
+        self.assertEqual(DEFAULTS["telegram_live_timeout"], 10)
+        clean, error = _validate({"telegram_live_timeout": "15"})
+        self.assertIsNone(error)
+        self.assertEqual(clean["telegram_live_timeout"], 15)
+        clean, error = _validate({"telegram_live_timeout": 0})
+        self.assertEqual(clean, {})
+        self.assertIn("telegram_live_timeout", error or "")
 
     def test_digest_time_round_trip(self):
         self.assertEqual(parse_clock("8:05"), "08:05")
@@ -163,6 +175,26 @@ class ReportTests(unittest.TestCase):
             "battery_swap": {"from": 26.6, "to": 24.1},
         })
         self.assertIn("26.6 → 24.1 В", "\n".join(lines))
+
+    def test_full_day_report_includes_every_event_and_markdown(self):
+        events = [
+            {"t": 1710000000 + index, "code": "fault", "message": f"Событие_{index}"}
+            for index in range(12)
+        ]
+        text = format_day_report({
+            "date": "2026-11-04",
+            "generated": "2026-11-04 12:00",
+            "stats": {"events": 12, "outages": 2, "energyKwh": 1.25, "peakW": 420},
+            "events": events,
+        })
+        self.assertIn("*Суточный отчёт", text)
+        self.assertIn("Пиковая мощность", text)
+        self.assertIn("Событие\\_0", text)
+        self.assertIn("Событие\\_11", text)
+        self.assertEqual(text.count(chr(96)), 24)
+        chunks = split_telegram_text("строка\n" * 1000, limit=3900)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 3900 for chunk in chunks))
 
     def test_report_counts_outages(self):
         points = [{"in": 220, "load": 30}, {"in": 210, "load": 40}]
