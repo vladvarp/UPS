@@ -169,6 +169,7 @@ const TG_ACTIONS = [
     { code: "events", title: "Журнал" },
     { code: "day_report", title: "Отчёт дня" },
     { code: "summary", title: "Сводка" },
+    { code: "live_view", title: "Трансляция" },
   ]},
 ];
 
@@ -1101,7 +1102,7 @@ function defaultGuestActions() {
   return {
     pc_off: false, pc_reboot: false, pc_sleep: false, pc_hibernate: false,
     cancel_shutdown: true, screenshot: true, app_restart: false,
-    status: true, events: true, day_report: true, summary: true,
+    status: true, events: true, day_report: true, summary: true, live_view: true,
   };
 }
 
