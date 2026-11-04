@@ -702,7 +702,7 @@ class TelegramBridge:
             if not chat_can(chat, "day_report"):
                 self._deny(chat_id)
                 return
-            self._send_markdown(chat_id, self._host.telegram_day_text(), menu=self._board(chat_id), chat=chat)
+            self._send_html(chat_id, "day_report", *self._host.telegram_day_html())
             return
         if lowered in {"трансляция", "живое состояние", "live"}:
             if not chat_can(chat, "live_view"):
@@ -726,12 +726,7 @@ class TelegramBridge:
             if not chat_can(chat, "events"):
                 self._deny(chat_id)
                 return
-            self._send_markdown(
-                int(chat_id),
-                self._host.telegram_events_text(),
-                menu=self._board(chat_id),
-                chat=chat,
-            )
+            self._notice(int(chat_id), "events", self._host.telegram_events_text())
             return
         if lowered in {"скриншот", "screenshot", "экран"} or head in {"скриншот", "screenshot", "экран"}:
             if not chat_can(chat, "screenshot"):
@@ -1674,15 +1669,15 @@ def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
 
 def format_events(events: list[dict], limit: int = 8) -> str:
     if not events:
-        return "*Журнал пуст.*"
-    lines = ["*Последние события*"]
+        return "Журнал пуст."
+    lines = ["Последние события:"]
     for item in events[-limit:]:
         try:
             stamp = datetime.fromtimestamp(float(item.get("t") or 0)).strftime("%d.%m %H:%M")
         except (TypeError, ValueError, OSError):
             stamp = "время неизвестно"
-        message = _markdown_escape(item.get("message") or "Событие")
-        lines.append(chr(96) + stamp + chr(96) + " · " + message)
+        message = str(item.get("message") or "Событие").strip()
+        lines.append(f"{stamp} · {message}")
     return "\n".join(lines)
 
 
