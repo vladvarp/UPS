@@ -909,7 +909,7 @@ class TelegramBridge:
                 session["reason"] = reason
                 session["stop"].set()
 
-    def _pair_or_ask(self, chat_id: int, name: str, text: str) -> None
+    def _pair_or_ask(self, chat_id: int, name: str, text: str) -> None:
         settings = self._host.get_settings_raw()
         pair = str(settings.get("telegram_pair") or "")
         code = extract_pair_code(text)
