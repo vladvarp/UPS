@@ -2264,17 +2264,27 @@ label.switch input {
 }
 .digest-block { margin: 0 0 4px; }
 .live-timeout {
-  margin: 14px 0 4px;
-  padding-top: 14px;
+  margin: 18px 0 4px;
+  padding-top: 16px;
   border-top: 1px solid var(--line);
 }
-.live-timeout label { max-width: 280px; color: var(--text); }
-.live-timeout input { width: 100%; }
-.live-timeout p {
-  margin: 7px 0 0;
+.live-timeout > .step { margin-bottom: 5px; }
+.live-timeout h3 { margin: 0 0 12px; font-size: 16px; font-weight: 620; }
+.live-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.live-settings-grid label { color: var(--text); }
+.live-settings-grid input { width: 100%; }
+.live-timeout > p:last-child {
+  margin: 8px 0 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
+}
+@media (max-width: 560px) {
+  .live-settings-grid { grid-template-columns: 1fr; }
 }
 .digest-block .switch { margin: 0 0 10px; }
 .clock-row {
