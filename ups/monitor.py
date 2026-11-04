@@ -102,6 +102,7 @@ DEFAULTS = {
     "telegram_digest": False,
     "telegram_digest_time": "21:00",
     "telegram_live_timeout": 10,
+    "telegram_live_interval": 3,
     "windows_notify": True,
     "spark_lines": ["in", "out", "batt"],
     "spark_window": 900,
@@ -137,6 +138,7 @@ _LIMITS = {
     "volt_crit_high": (80, 300),
     "spark_window": (30, 86400),
     "telegram_live_timeout": (1, 120),
+    "telegram_live_interval": (1, 60),
 }
 
 SIMULATIONS = (
@@ -1922,7 +1924,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             number = float(value)
         except (TypeError, ValueError):
             return {}, f"Поле «{key}» должно быть числом"
-        if key in {"poll_seconds", "battery_count", "battery_groups", "battery_health", "shutdown_delay", "spark_window", "telegram_live_timeout"}:
+        if key in {"poll_seconds", "battery_count", "battery_groups", "battery_health", "shutdown_delay", "spark_window", "telegram_live_timeout", "telegram_live_interval"}:
             number = int(number)
         if not low <= number <= high:
             return {}, f"Поле «{key}» вне допустимых пределов"
