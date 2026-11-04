@@ -320,12 +320,14 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(chat_gets_event({}, guest, "on_battery"))
         self.assertFalse(chat_gets_event({}, guest, "fault"))
         self.assertTrue(chat_can(guest, "status"))
+        self.assertTrue(chat_can(guest, "live_view"))
         self.assertFalse(chat_can(guest, "pc_off"))
         self.assertTrue(chat_can(guest, "screenshot"))
         self.assertFalse(chat_can(guest, "menu_pc"))
         rows = [cell for row in _menu_rows("root", guest) for cell in row]
         self.assertNotIn("ПК", rows)
         self.assertIn("ПО", rows)
+        self.assertIn("Трансляция", [cell for row in _menu_rows("reports", guest) for cell in row])
         owner = {"id": 1, "name": "я", "guest": False}
         self.assertFalse(chat_gets_event({"telegram_events": {"fault": {"on": False}}}, owner, "fault"))
         self.assertTrue(chat_can(owner, "pc_off"))
