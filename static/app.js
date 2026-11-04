@@ -343,6 +343,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") reloadLiveHistory();
 });
 $("tgDigest").addEventListener("change", saveTelegramFlags);
+$("tgLiveTimeout").addEventListener("change", saveTelegramFlags);
 $("tgEventList").addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement)) return;
@@ -849,12 +850,20 @@ function renderTelegramEvents(settings) {
 
 async function saveTelegramFlags() {
   syncDigestTime();
+  const timeout = Number($("tgLiveTimeout").value);
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) {
+    $("tgLiveTimeout").setCustomValidity("Укажите значение от 1 до 120 минут");
+    $("tgLiveTimeout").reportValidity();
+    return;
+  }
+  $("tgLiveTimeout").setCustomValidity("");
   await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       telegram_digest: $("tgDigest").checked,
       telegram_digest_time: digestClockValue(),
+      telegram_live_timeout: timeout,
       telegram_events: telegramEventsPayload(),
       windows_notify: $("windowsNotify").checked,
     }),
@@ -1331,6 +1340,8 @@ function fillTelegramFields() {
   const settings = (state && state.settings) || {};
   $("tgDigest").checked = Boolean(settings.telegram_digest);
   $("windowsNotify").checked = settings.windows_notify !== false;
+  $("tgLiveTimeout").value = String(settings.telegram_live_timeout || 10);
+  $("tgLiveTimeout").setCustomValidity("");
   setDigestClock(settings.telegram_digest_time || "21:00");
   syncDigestTime();
   renderTelegramEvents(settings);
