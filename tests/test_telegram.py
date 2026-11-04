@@ -196,6 +196,45 @@ class ReportTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 3900 for chunk in chunks))
 
+    def test_live_session_pins_and_unpins_one_message(self):
+        class Host:
+            def get_settings_raw(self):
+                return {
+                    "telegram_live_timeout": 10,
+                    "telegram_chats": [{"id": 7, "name": "test"}],
+                }
+
+            def telegram_live_text(self):
+                return "UPS · ЖИВАЯ ТРАНСЛЯЦИЯ"
+
+        calls = []
+
+        def api(_token, method, payload=None, timeout=12):
+            calls.append((method, payload or {}))
+            if method == "sendMessage":
+                return {"result": {"message_id": 77}}
+            return {"result": True}
+
+        class DummyThread:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+            def start(self):
+                pass
+
+        bot = TelegramBridge(Host())
+        bot._token = "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        with patch("ups.telegram._api", side_effect=api), patch("ups.telegram.threading.Thread", DummyThread):
+            bot._start_live(7)
+            session = bot._live_sessions[7]
+            self.assertEqual(session["timeout"], 600)
+            self.assertIn(("pinChatMessage", {"chat_id": 7, "message_id": 77, "disable_notification": True}), calls)
+            session["stop"].set()
+            bot._live_loop(7, session)
+        self.assertIn("unpinChatMessage", [method for method, _payload in calls])
+        self.assertNotIn(7, bot._live_sessions)
+
     def test_report_counts_outages(self):
         points = [{"in": 220, "load": 30}, {"in": 210, "load": 40}]
         events = [
