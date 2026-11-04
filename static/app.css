@@ -2263,6 +2263,19 @@ label.switch input {
   background: var(--ok);
 }
 .digest-block { margin: 0 0 4px; }
+.live-timeout {
+  margin: 14px 0 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.live-timeout label { max-width: 280px; color: var(--text); }
+.live-timeout input { width: 100%; }
+.live-timeout p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .digest-block .switch { margin: 0 0 10px; }
 .clock-row {
   display: flex;
