@@ -101,6 +101,7 @@ DEFAULTS = {
     "telegram_events": {},
     "telegram_digest": False,
     "telegram_digest_time": "21:00",
+    "telegram_live_timeout": 10,
     "windows_notify": True,
     "spark_lines": ["in", "out", "batt"],
     "spark_window": 900,
@@ -135,6 +136,7 @@ _LIMITS = {
     "volt_crit_low": (80, 300),
     "volt_crit_high": (80, 300),
     "spark_window": (30, 86400),
+    "telegram_live_timeout": (1, 120),
 }
 
 SIMULATIONS = (
@@ -507,6 +509,26 @@ class Monitor:
         with self._lock:
             events = list(self._events)
         return format_events(events)
+
+    def telegram_live_text(self) -> str:
+        with self._lock:
+            reading = None if self._reading is None else dict(self._reading)
+            message = self._message
+        stamp = time.strftime("%d.%m.%Y %H:%M:%S")
+        return "\n".join([
+            f"{APP_NAME} · ЖИВАЯ ТРАНСЛЯЦИЯ",
+            f"Обновлено: {stamp}",
+            message,
+            "",
+            *status_lines(reading),
+        ])
+
+    def telegram_day_text(self, stamp: str | None = None) -> str:
+        from ups.telegram import format_day_report
+        day = self._day_report(stamp)
+        if not day["points"] and not day["events"]:
+            return "За этот день записей ещё нет."
+        return format_day_report(day)
 
     def telegram_day_html(self, stamp: str | None = None) -> tuple[bytes | None, str]:
         day = self._day_report(stamp)
@@ -1900,7 +1922,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             number = float(value)
         except (TypeError, ValueError):
             return {}, f"Поле «{key}» должно быть числом"
-        if key in {"poll_seconds", "battery_count", "battery_groups", "battery_health", "shutdown_delay", "spark_window"}:
+        if key in {"poll_seconds", "battery_count", "battery_groups", "battery_health", "shutdown_delay", "spark_window", "telegram_live_timeout"}:
             number = int(number)
         if not low <= number <= high:
             return {}, f"Поле «{key}» вне допустимых пределов"
