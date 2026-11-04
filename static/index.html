@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UPS — монитор питания</title>
-  <link rel="stylesheet" href="/app.css?v=88">
+  <link rel="stylesheet" href="/app.css?v=89">
   <link rel="icon" type="image/png" href="/icon.png">
 </head>
 <body data-power="idle">
@@ -463,6 +463,21 @@
                   </div>
                 </div>
               </div>
+            </div>
+            <div class="live-timeout">
+              <p class="step">Живая трансляция</p>
+              <h3>Параметры обновления</h3>
+              <div class="live-settings-grid">
+                <label>
+                  Интервал обновления, сек.
+                  <input id="tgLiveInterval" name="telegram_live_interval" type="number" min="1" max="60" step="1" value="3" required title="Как часто бот обновляет сообщение трансляции">
+                </label>
+                <label>
+                  Тайм-аут трансляции, мин
+                  <input id="tgLiveTimeout" name="telegram_live_timeout" type="number" min="1" max="120" step="1" value="10" required title="Через сколько минут трансляция завершится автоматически">
+                </label>
+              </div>
+              <p>Трансляция автоматически завершится по истечении заданного тайм-аута.</p>
             </div>
           </article>
 

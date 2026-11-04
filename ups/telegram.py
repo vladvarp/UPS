@@ -34,6 +34,7 @@ _MENUS = {
     "reports": [
         ["Состояние", "Журнал"],
         ["Отчёт дня", "Сводка"],
+        ["Трансляция"],
         ["Назад"],
     ],
 }
@@ -133,13 +134,14 @@ BOT_ACTIONS = (
     {"code": "events", "group": "Отчёты", "title": "Журнал"},
     {"code": "day_report", "group": "Отчёты", "title": "Отчёт дня"},
     {"code": "summary", "group": "Отчёты", "title": "Сводка"},
+    {"code": "live_view", "group": "Отчёты", "title": "Трансляция"},
 )
 
 _ACTION_CODES = {item["code"] for item in BOT_ACTIONS}
 _GROUP_ACTIONS = {
     "pc": {"pc_off", "pc_reboot", "pc_sleep", "pc_hibernate", "cancel_shutdown"},
     "app": {"screenshot", "app_restart"},
-    "reports": {"status", "events", "day_report", "summary"},
+    "reports": {"status", "events", "day_report", "summary", "live_view"},
 }
 _BUTTON_ACTION = {
     "ПК": "menu_pc",
@@ -156,6 +158,7 @@ _BUTTON_ACTION = {
     "Журнал": "events",
     "Отчёт дня": "day_report",
     "Сводка": "summary",
+    "Трансляция": "live_view",
 }
 
 
@@ -172,6 +175,7 @@ def default_guest_actions() -> dict:
         "events": True,
         "day_report": True,
         "summary": True,
+        "live_view": True,
     }
 
 
@@ -385,7 +389,7 @@ EVENT_GROUPS = (
 ACTION_GROUPS = (
     ("ПК", ("pc_off", "pc_reboot", "pc_sleep", "pc_hibernate", "cancel_shutdown")),
     ("ПО", ("screenshot", "app_restart")),
-    ("Отчёты", ("status", "events", "day_report", "summary")),
+    ("Отчёты", ("status", "events", "day_report", "summary", "live_view")),
 )
 
 EVENT_TITLES = {
@@ -435,6 +439,8 @@ class TelegramBridge:
         self._digest_day = ""
         self._startup_sent = False
         self._boards: dict[int, str] = {}
+        self._live_lock = threading.Lock()
+        self._live_sessions: dict[int, dict] = {}
         self._offset = _load_offset()
         self._backlog_cleared = False
 
@@ -489,13 +495,31 @@ class TelegramBridge:
 
     def stop(self) -> None:
         self._stop.set()
+        self._stop_live_sessions("Программа UPS остановлена")
+        with self._live_lock:
+            sessions = list(self._live_sessions.items())
+        for chat_id, session in sessions:
+            try:
+                _api(session["token"], "unpinChatMessage", {
+                    "chat_id": chat_id,
+                    "message_id": session["message_id"],
+                }, timeout=3)
+            except TelegramError:
+                pass
         if self._thread:
             self._thread.join(timeout=2)
+        deadline = time.monotonic() + 5
+        for _chat_id, session in sessions:
+            thread = session.get("thread")
+            if thread and thread is not threading.current_thread():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def configure(self, settings: dict) -> None:
         token = str(settings.get("telegram_token") or "").strip()
+        changed = False
         with self._lock:
             if token != self._token:
+                changed = True
                 previous = self._token
                 self._token = token
                 if previous:
@@ -506,6 +530,8 @@ class TelegramBridge:
                 self._error = "" if token else "токен не задан"
                 self._startup_sent = False
                 self._backlog_cleared = False
+        if changed:
+            self._stop_live_sessions("Настройки подключения Telegram изменились")
 
     def status(self) -> dict:
         settings = self._host.get_settings_raw()
@@ -678,6 +704,12 @@ class TelegramBridge:
                 return
             self._send_html(chat_id, "day_report", *self._host.telegram_day_html())
             return
+        if lowered in {"трансляция", "живое состояние", "live"}:
+            if not chat_can(chat, "live_view"):
+                self._deny(chat_id)
+                return
+            self._start_live(int(chat_id))
+            return
         if lowered in {"сводка", "сводка дней", "summary"}:
             if not chat_can(chat, "summary"):
                 self._deny(chat_id)
@@ -694,7 +726,7 @@ class TelegramBridge:
             if not chat_can(chat, "events"):
                 self._deny(chat_id)
                 return
-            self._notice(chat_id, "events", self._host.telegram_events_text())
+            self._notice(int(chat_id), "events", self._host.telegram_events_text())
             return
         if lowered in {"скриншот", "screenshot", "экран"} or head in {"скриншот", "screenshot", "экран"}:
             if not chat_can(chat, "screenshot"):
@@ -727,6 +759,172 @@ class TelegramBridge:
             return
         _send(self._token, chat_id, "Не понял. Нажмите кнопку внизу или /help.", menu=self._board(chat_id), chat=chat)
 
+    def _start_live(self, chat_id: int) -> None:
+        token = self._token
+        if not token:
+            self._notice(chat_id, "status", "Бот Telegram не подключён.")
+            return
+        chat = self._chat_item(chat_id)
+        if not chat or not chat_can(chat, "live_view"):
+            self._deny(chat_id)
+            return
+        settings = self._host.get_settings_raw()
+        try:
+            timeout_minutes = int(settings.get("telegram_live_timeout", 10))
+        except (TypeError, ValueError):
+            timeout_minutes = 10
+        timeout_seconds = max(60, min(7200, timeout_minutes * 60))
+        try:
+            interval_seconds = int(settings.get("telegram_live_interval", 3))
+        except (TypeError, ValueError):
+            interval_seconds = 3
+        interval_seconds = max(1, min(60, interval_seconds))
+        markup = {"inline_keyboard": [[{"text": "Остановить трансляцию", "callback_data": "live:stop"}]]}
+        with self._live_lock:
+            current = self._live_sessions.get(chat_id)
+            if current:
+                try:
+                    _api(token, "editMessageText", {
+                        "chat_id": chat_id,
+                        "message_id": current["message_id"],
+                        "text": self._host.telegram_live_text(),
+                        "reply_markup": markup,
+                    }, timeout=8)
+                    _api(token, "pinChatMessage", {
+                        "chat_id": chat_id,
+                        "message_id": current["message_id"],
+                        "disable_notification": True,
+                    }, timeout=8)
+                except TelegramError as exc:
+                    with self._lock:
+                        self._error = str(exc)
+                return
+            text = self._host.telegram_live_text()
+            data = _api(token, "sendMessage", {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+                "reply_markup": markup,
+            }, timeout=12)
+            message_id = (data.get("result") or {}).get("message_id")
+            if message_id is None:
+                raise TelegramError("Telegram не вернул id сообщения трансляции")
+            session = {
+                "token": token,
+                "message_id": int(message_id),
+                "stop": threading.Event(),
+                "started_at": time.monotonic(),
+                "timeout": timeout_seconds,
+                "interval": interval_seconds,
+                "reason": "",
+                "thread": None,
+            }
+            self._live_sessions[chat_id] = session
+            try:
+                _api(token, "pinChatMessage", {
+                    "chat_id": chat_id,
+                    "message_id": int(message_id),
+                    "disable_notification": True,
+                }, timeout=8)
+            except TelegramError as exc:
+                session["pin_error"] = str(exc)
+                try:
+                    _api(token, "editMessageText", {
+                        "chat_id": chat_id,
+                        "message_id": int(message_id),
+                        "text": text + "\n\nЗакрепить сообщение не удалось: проверьте права бота в чате.",
+                        "reply_markup": markup,
+                    }, timeout=8)
+                except TelegramError:
+                    pass
+            thread = threading.Thread(
+                target=self._live_loop,
+                args=(chat_id, session),
+                name=f"ups-telegram-live-{chat_id}",
+                daemon=True,
+            )
+            session["thread"] = thread
+            thread.start()
+
+    def _live_loop(self, chat_id: int, session: dict) -> None:
+        stop_event = session["stop"]
+        token = session["token"]
+        message_id = session["message_id"]
+        reason = ""
+        try:
+            interval = max(1, min(60, int(session.get("interval", 3))))
+            while not self._stop.is_set() and not stop_event.wait(interval):
+                if time.monotonic() - session["started_at"] >= session["timeout"]:
+                    reason = "истёк тайм-аут"
+                    break
+                try:
+                    _api(token, "editMessageText", {
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "text": self._host.telegram_live_text() + (
+                            "\n\nЗакрепить сообщение не удалось: проверьте права бота в чате."
+                            if session.get("pin_error") else ""
+                        ),
+                        "reply_markup": {
+                            "inline_keyboard": [[{
+                                "text": "Остановить трансляцию",
+                                "callback_data": "live:stop",
+                            }]],
+                        },
+                    }, timeout=8)
+                except TelegramError as exc:
+                    message = str(exc).lower()
+                    if "message is not modified" not in message:
+                        with self._lock:
+                            self._error = str(exc)
+                    if any(part in message for part in (
+                        "message to edit not found", "chat not found", "bot was blocked",
+                        "bot is not a member", "message can't be edited",
+                    )):
+                        reason = "сообщение больше недоступно"
+                        break
+            if not reason:
+                reason = session.get("reason") or (
+                    "программа UPS остановлена" if self._stop.is_set() else "остановлена пользователем"
+                )
+        finally:
+            try:
+                _api(token, "unpinChatMessage", {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                }, timeout=5)
+            except TelegramError:
+                pass
+            final_text = self._host.telegram_live_text() + f"\n\nТрансляция завершена: {reason}."
+            try:
+                _api(token, "editMessageText", {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": final_text,
+                    "reply_markup": {"inline_keyboard": []},
+                }, timeout=5)
+            except TelegramError:
+                pass
+            with self._live_lock:
+                if self._live_sessions.get(chat_id) is session:
+                    self._live_sessions.pop(chat_id, None)
+
+    def _stop_live(self, chat_id: int, reason: str = "остановлена пользователем") -> None:
+        with self._live_lock:
+            session = self._live_sessions.get(chat_id)
+            if session:
+                session["reason"] = reason
+                session["stop"].set()
+        if not session:
+            _send(self._token, chat_id, "Активной трансляции нет.", menu=self._board(chat_id), chat=self._chat_item(chat_id))
+
+    def _stop_live_sessions(self, reason: str) -> None:
+        with self._live_lock:
+            sessions = list(self._live_sessions.values())
+            for session in sessions:
+                session["reason"] = reason
+                session["stop"].set()
+
     def _pair_or_ask(self, chat_id: int, name: str, text: str) -> None:
         settings = self._host.get_settings_raw()
         pair = str(settings.get("telegram_pair") or "")
@@ -740,6 +938,22 @@ class TelegramBridge:
             chat_id,
             "Напишите код из вкладки Телеграм в UPS. Только цифры, без /start.",
         )
+
+    def _send_markdown(self, chat_id: int, text: str, menu: str | None = None, chat: dict | None = None) -> None:
+        token = self._token
+        if not token:
+            return
+        chunks = split_telegram_text(text)
+        for index, chunk in enumerate(chunks):
+            payload = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            if index == len(chunks) - 1 and menu:
+                payload["reply_markup"] = _keyboard(menu, chat)
+            _api(token, "sendMessage", payload, timeout=12)
 
     def _send_html(self, chat_id: int, code: str, body: bytes | None, name: str) -> None:
         if not body:
@@ -801,6 +1015,12 @@ class TelegramBridge:
             self._admin_callback(int(chat_id), data, query)
             return
         if not self._known(int(chat_id)):
+            return
+        if data == "live:stop":
+            if not chat_can(self._chat_item(chat_id), "live_view"):
+                self._deny(chat_id)
+                return
+            self._stop_live(int(chat_id))
             return
         if not callback_fresh(query):
             self._notice(chat_id, "cancel", "Кнопка устарела. Нажмите действие ещё раз.")
@@ -1376,13 +1596,95 @@ def format_report(hours: int, points: list[dict], events: list[dict], reading: d
     return "\n".join(lines)
 
 
+def _markdown_escape(value) -> str:
+    text = str(value if value is not None else "")
+    for char in ("\\", "_", "*", "[", chr(96)):
+        text = text.replace(char, "\\" + char)
+    return text
+
+
+def format_day_report(day: dict) -> str:
+    stats = day.get("stats") or {}
+    events = day.get("events") or []
+    lines = [
+        f"*Суточный отчёт · {_markdown_escape(day.get('date') or '')}*",
+        f"_Сформирован: {_markdown_escape(day.get('generated') or datetime.now().strftime('%Y-%m-%d %H:%M'))}_",
+        "",
+        "*Показатели*",
+    ]
+    fields = (
+        ("samples", "Минут с данными", " мин"),
+        ("inAvg", "Входное напряжение, среднее", " В"),
+        ("inMin", "Входное напряжение, минимум", " В"),
+        ("inMax", "Входное напряжение, максимум", " В"),
+        ("outAvg", "Выходное напряжение, среднее", " В"),
+        ("loadAvg", "Средняя нагрузка", " %"),
+        ("loadMax", "Пиковая нагрузка", " %"),
+        ("avgW", "Средняя мощность", " Вт"),
+        ("peakW", "Пиковая мощность", " Вт"),
+        ("battAvg", "Среднее напряжение батареи", " В"),
+        ("socAvg", "Средний заряд", " %"),
+        ("tempAvg", "Средняя температура", " °C"),
+        ("outages", "Переходы на батарею", ""),
+        ("onBatteryMinutes", "Минут на батарее", " мин"),
+        ("energyKwh", "Потребление энергии", " кВт·ч"),
+        ("energyKwhMains", "Энергия от сети", " кВт·ч"),
+        ("energyKwhBattery", "Энергия от батареи", " кВт·ч"),
+        ("events", "Всего событий", ""),
+    )
+    for key, label, unit in fields:
+        value = stats.get(key)
+        if value is None:
+            continue
+        if isinstance(value, float):
+            rendered = f"{value:.2f}".rstrip("0").rstrip(".")
+        else:
+            rendered = str(value)
+        lines.append(f"• {_markdown_escape(label)}: {rendered}{unit}")
+    if events:
+        lines.extend(["", f"*События ({len(events)})*"])
+        for item in events:
+            try:
+                stamp = datetime.fromtimestamp(float(item.get("t") or 0)).strftime("%d.%m %H:%M:%S")
+            except (TypeError, ValueError, OSError):
+                stamp = "время неизвестно"
+            message = _markdown_escape(item.get("message") or item.get("code") or "Событие")
+            lines.append(chr(96) + stamp + chr(96) + " · " + message)
+    else:
+        lines.extend(["", "*События*", "Нет событий за этот день."])
+    return "\n".join(lines)
+
+
+def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
+    chunks = []
+    current = ""
+    for line in str(text or "").splitlines(keepends=True):
+        while len(line) > limit:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if current and len(current) + len(line) > limit:
+            chunks.append(current.rstrip())
+            current = ""
+        current += line
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks or ["Отчёт пуст."]
+
+
 def format_events(events: list[dict], limit: int = 8) -> str:
     if not events:
         return "Журнал пуст."
     lines = ["Последние события:"]
     for item in events[-limit:]:
-        stamp = datetime.fromtimestamp(item["t"]).strftime("%d.%m %H:%M")
-        lines.append(f"{stamp} · {item.get('message') or ''}")
+        try:
+            stamp = datetime.fromtimestamp(float(item.get("t") or 0)).strftime("%d.%m %H:%M")
+        except (TypeError, ValueError, OSError):
+            stamp = "время неизвестно"
+        message = str(item.get("message") or "Событие").strip()
+        lines.append(f"{stamp} · {message}")
     return "\n".join(lines)
 
 
@@ -1392,7 +1694,8 @@ def help_text(username: str) -> str:
         f"{who} следит за питанием.\n"
         "ПК — выключение, сон, перезагрузка и гибернация.\n"
         "ПО — скриншот и перезапуск программы.\n"
-        "Отчёты — состояние, журнал, отчёт дня и сводка в HTML.\n"
+        "Отчёты — состояние, журнал, отчёт дня в Markdown и сводка в HTML.\n"
+        "Трансляция — живое состояние ИБП с обновлением каждые 3 секунды.\n"
         "Слева от поля ввода — состояние, скриншот и журнал.\n"
         "Новый чат привязывается кодом из программы, без /start."
     )

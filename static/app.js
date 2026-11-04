@@ -169,6 +169,7 @@ const TG_ACTIONS = [
     { code: "events", title: "Журнал" },
     { code: "day_report", title: "Отчёт дня" },
     { code: "summary", title: "Сводка" },
+    { code: "live_view", title: "Трансляция" },
   ]},
 ];
 
@@ -342,6 +343,8 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") reloadLiveHistory();
 });
 $("tgDigest").addEventListener("change", saveTelegramFlags);
+$("tgLiveTimeout").addEventListener("change", saveTelegramFlags);
+$("tgLiveInterval").addEventListener("change", saveTelegramFlags);
 $("tgEventList").addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement)) return;
@@ -848,12 +851,28 @@ function renderTelegramEvents(settings) {
 
 async function saveTelegramFlags() {
   syncDigestTime();
+  const timeout = Number($("tgLiveTimeout").value);
+  const interval = Number($("tgLiveInterval").value);
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) {
+    $("tgLiveTimeout").setCustomValidity("Укажите значение от 1 до 120 минут");
+    $("tgLiveTimeout").reportValidity();
+    return;
+  }
+  $("tgLiveTimeout").setCustomValidity("");
+  if (!Number.isInteger(interval) || interval < 1 || interval > 60) {
+    $("tgLiveInterval").setCustomValidity("Укажите значение от 1 до 60 секунд");
+    $("tgLiveInterval").reportValidity();
+    return;
+  }
+  $("tgLiveInterval").setCustomValidity("");
   await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       telegram_digest: $("tgDigest").checked,
       telegram_digest_time: digestClockValue(),
+      telegram_live_timeout: timeout,
+      telegram_live_interval: interval,
       telegram_events: telegramEventsPayload(),
       windows_notify: $("windowsNotify").checked,
     }),
@@ -1101,7 +1120,7 @@ function defaultGuestActions() {
   return {
     pc_off: false, pc_reboot: false, pc_sleep: false, pc_hibernate: false,
     cancel_shutdown: true, screenshot: true, app_restart: false,
-    status: true, events: true, day_report: true, summary: true,
+    status: true, events: true, day_report: true, summary: true, live_view: true,
   };
 }
 
@@ -1330,6 +1349,10 @@ function fillTelegramFields() {
   const settings = (state && state.settings) || {};
   $("tgDigest").checked = Boolean(settings.telegram_digest);
   $("windowsNotify").checked = settings.windows_notify !== false;
+  $("tgLiveTimeout").value = String(settings.telegram_live_timeout || 10);
+  $("tgLiveTimeout").setCustomValidity("");
+  $("tgLiveInterval").value = String(settings.telegram_live_interval || 3);
+  $("tgLiveInterval").setCustomValidity("");
   setDigestClock(settings.telegram_digest_time || "21:00");
   syncDigestTime();
   renderTelegramEvents(settings);
