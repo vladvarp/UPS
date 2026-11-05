@@ -67,6 +67,7 @@ from ups.telegram import (
     default_guest_actions,
     default_guest_events,
     format_events,
+    format_live_markdown,
     format_report,
     merge_global_events,
     parse_clock,
@@ -512,18 +513,29 @@ class Monitor:
             events = list(self._events)
         return format_events(events)
 
-    def telegram_live_text(self) -> str:
+    def _today_energy(self) -> dict:
+        now = time.time()
+        with self._lock:
+            cached_at, cached = getattr(self, "_energy_cache", (0.0, None))
+        if isinstance(cached, dict) and now - float(cached_at) < 10:
+            return cached
+        local = time.localtime(now)
+        start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+        try:
+            report = self.energy(start, now)
+        except (sqlite3.Error, OSError, TypeError, ValueError):
+            return cached if isinstance(cached, dict) else {}
+        if not isinstance(report, dict):
+            report = {}
+        with self._lock:
+            self._energy_cache = (now, report)
+        return report
+
+    def telegram_live_text(self, protocol_open: bool = False) -> str:
         with self._lock:
             reading = None if self._reading is None else dict(self._reading)
             message = self._message
-        stamp = time.strftime("%d.%m.%Y %H:%M:%S")
-        return "\n".join([
-            f"{APP_NAME} · ЖИВАЯ ТРАНСЛЯЦИЯ",
-            f"Обновлено: {stamp}",
-            message,
-            "",
-            *status_lines(reading),
-        ])
+        return format_live_markdown(reading, message, self._today_energy(), protocol_open=bool(protocol_open))
 
     def telegram_day_text(self, stamp: str | None = None) -> str:
         from ups.telegram import format_day_report

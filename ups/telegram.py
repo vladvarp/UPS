@@ -12,6 +12,7 @@ from datetime import datetime
 
 from pathlib import Path
 
+from ups import APP_NAME
 from ups.notify_art import card_title, notify_image
 
 TOKEN_RE = re.compile(r"^\d{5,12}:[A-Za-z0-9_-]{20,}$")
@@ -779,33 +780,23 @@ class TelegramBridge:
         except (TypeError, ValueError):
             interval_seconds = 3
         interval_seconds = max(1, min(60, interval_seconds))
-        markup = {"inline_keyboard": [[{"text": "Остановить трансляцию", "callback_data": "live:stop"}]]}
+        draft = {
+            "started_at": time.monotonic(),
+            "timeout": timeout_seconds,
+            "interval": interval_seconds,
+            "pin_error": "",
+            "wake": threading.Event(),
+        }
         with self._live_lock:
             current = self._live_sessions.get(chat_id)
             if current:
                 try:
-                    _api(token, "editMessageText", {
-                        "chat_id": chat_id,
-                        "message_id": current["message_id"],
-                        "text": self._host.telegram_live_text(),
-                        "reply_markup": markup,
-                    }, timeout=8)
-                    _api(token, "pinChatMessage", {
-                        "chat_id": chat_id,
-                        "message_id": current["message_id"],
-                        "disable_notification": True,
-                    }, timeout=8)
+                    self._repost_live(token, chat_id, current)
                 except TelegramError as exc:
                     with self._lock:
                         self._error = str(exc)
                 return
-            text = self._host.telegram_live_text()
-            data = _api(token, "sendMessage", {
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-                "reply_markup": markup,
-            }, timeout=12)
+            data = self._push_live(token, chat_id, None, draft, timeout=12)
             message_id = (data.get("result") or {}).get("message_id")
             if message_id is None:
                 raise TelegramError("Telegram не вернул id сообщения трансляции")
@@ -813,11 +804,9 @@ class TelegramBridge:
                 "token": token,
                 "message_id": int(message_id),
                 "stop": threading.Event(),
-                "started_at": time.monotonic(),
-                "timeout": timeout_seconds,
-                "interval": interval_seconds,
                 "reason": "",
                 "thread": None,
+                **draft,
             }
             self._live_sessions[chat_id] = session
             try:
@@ -829,12 +818,7 @@ class TelegramBridge:
             except TelegramError as exc:
                 session["pin_error"] = str(exc)
                 try:
-                    _api(token, "editMessageText", {
-                        "chat_id": chat_id,
-                        "message_id": int(message_id),
-                        "text": text + "\n\nЗакрепить сообщение не удалось: проверьте права бота в чате.",
-                        "reply_markup": markup,
-                    }, timeout=8)
+                    self._push_live(token, chat_id, int(message_id), session, timeout=8)
                 except TelegramError:
                     pass
             thread = threading.Thread(
@@ -846,37 +830,46 @@ class TelegramBridge:
             session["thread"] = thread
             thread.start()
 
+    def _live_wait(self, session: dict, stop_event: threading.Event) -> bool:
+        interval = max(1, min(60, int(session.get("interval") or 3)))
+        end = time.monotonic() + interval
+        wake = session.get("wake")
+        while True:
+            if stop_event.is_set() or self._stop.is_set():
+                return True
+            if wake is not None and wake.is_set():
+                wake.clear()
+                return False
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            if wake is not None:
+                wake.wait(min(left, 0.2))
+            elif stop_event.wait(left):
+                return True
+
     def _live_loop(self, chat_id: int, session: dict) -> None:
         stop_event = session["stop"]
         token = session["token"]
-        message_id = session["message_id"]
         reason = ""
         try:
-            interval = max(1, min(60, int(session.get("interval", 3))))
-            while not self._stop.is_set() and not stop_event.wait(interval):
-                if time.monotonic() - session["started_at"] >= session["timeout"]:
+            while not self._stop.is_set() and not self._live_wait(session, stop_event):
+                if not session.get("infinite") and time.monotonic() - float(session["started_at"]) >= float(session["timeout"]):
                     reason = "истёк тайм-аут"
                     break
+                message_id = session["message_id"]
                 try:
-                    _api(token, "editMessageText", {
-                        "chat_id": chat_id,
-                        "message_id": message_id,
-                        "text": self._host.telegram_live_text() + (
-                            "\n\nЗакрепить сообщение не удалось: проверьте права бота в чате."
-                            if session.get("pin_error") else ""
-                        ),
-                        "reply_markup": {
-                            "inline_keyboard": [[{
-                                "text": "Остановить трансляцию",
-                                "callback_data": "live:stop",
-                            }]],
-                        },
-                    }, timeout=8)
+                    self._push_live(token, chat_id, message_id, session, timeout=8)
                 except TelegramError as exc:
                     message = str(exc).lower()
                     if "message is not modified" not in message:
                         with self._lock:
                             self._error = str(exc)
+                    moved = session.get("message_id") != message_id and any(part in message for part in (
+                        "message to edit not found", "message can't be edited",
+                    ))
+                    if moved:
+                        continue
                     if any(part in message for part in (
                         "message to edit not found", "chat not found", "bot was blocked",
                         "bot is not a member", "message can't be edited",
@@ -888,6 +881,7 @@ class TelegramBridge:
                     "программа UPS остановлена" if self._stop.is_set() else "остановлена пользователем"
                 )
         finally:
+            message_id = session["message_id"]
             try:
                 _api(token, "unpinChatMessage", {
                     "chat_id": chat_id,
@@ -895,19 +889,156 @@ class TelegramBridge:
                 }, timeout=5)
             except TelegramError:
                 pass
-            final_text = self._host.telegram_live_text() + f"\n\nТрансляция завершена: {reason}."
             try:
-                _api(token, "editMessageText", {
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": final_text,
-                    "reply_markup": {"inline_keyboard": []},
-                }, timeout=5)
+                self._push_live(token, chat_id, message_id, session, finished=reason, timeout=5)
             except TelegramError:
                 pass
             with self._live_lock:
                 if self._live_sessions.get(chat_id) is session:
                     self._live_sessions.pop(chat_id, None)
+
+    def _live_card(self, protocol_open: bool = False) -> str:
+        render = self._host.telegram_live_text
+        try:
+            return render(protocol_open=protocol_open)
+        except TypeError:
+            return render()
+
+    def _live_markdown(self, session: dict | None, finished: str = "") -> str:
+        remaining = None
+        total = None
+        interval = None
+        pin_error = ""
+        if session:
+            try:
+                total = int(session.get("timeout") or 0) or None
+            except (TypeError, ValueError):
+                total = None
+            try:
+                interval = int(session.get("interval") or 0) or None
+            except (TypeError, ValueError):
+                interval = None
+            pin_error = session.get("pin_error") or ""
+            started = session.get("started_at")
+            if session.get("infinite"):
+                remaining = None
+            elif total and started is not None:
+                remaining = max(0, int(total - (time.monotonic() - float(started))))
+        return compose_live_markdown(
+            self._live_card(bool(session and session.get("protocol_open"))),
+            remaining=remaining,
+            total=total,
+            interval=interval,
+            pin_error=pin_error,
+            finished=finished,
+            infinite=bool(session and session.get("infinite")),
+        )
+
+    def _push_live(self, token: str, chat_id: int, message_id, session: dict | None, finished: str = "", timeout: float = 8, silent: bool = False) -> dict:
+        payload = {
+            "chat_id": chat_id,
+            "rich_message": {
+                "markdown": self._live_markdown(session, finished),
+                "skip_entity_detection": True,
+            },
+            "reply_markup": _live_keyboard(
+                not finished,
+                None if finished or session is None else session.get("interval"),
+                bool(session and session.get("protocol_open")),
+            ),
+        }
+        if message_id is None:
+            if silent:
+                payload["disable_notification"] = True
+            return _api(token, "sendRichMessage", payload, timeout=timeout)
+        payload["message_id"] = message_id
+        return _api(token, "editMessageText", payload, timeout=timeout)
+
+    def _repost_live(self, token: str, chat_id: int, session: dict) -> None:
+        old_id = session["message_id"]
+        data = self._push_live(token, chat_id, None, session, timeout=12, silent=True)
+        new_id = (data.get("result") or {}).get("message_id")
+        if new_id is None:
+            raise TelegramError("Telegram не вернул id сообщения трансляции")
+        session["message_id"] = int(new_id)
+        session["pin_error"] = ""
+        try:
+            _api(token, "pinChatMessage", {
+                "chat_id": chat_id,
+                "message_id": int(new_id),
+                "disable_notification": True,
+            }, timeout=8)
+        except TelegramError as exc:
+            session["pin_error"] = str(exc)
+            try:
+                self._push_live(token, chat_id, int(new_id), session, timeout=8)
+            except TelegramError:
+                pass
+        if int(new_id) == int(old_id):
+            return
+        try:
+            _api(token, "unpinChatMessage", {
+                "chat_id": chat_id,
+                "message_id": old_id,
+            }, timeout=5)
+        except TelegramError:
+            pass
+        try:
+            _api(token, "deleteMessage", {
+                "chat_id": chat_id,
+                "message_id": old_id,
+            }, timeout=5)
+        except TelegramError:
+            pass
+
+    def _toggle_protocol(self, chat_id: int) -> None:
+        with self._live_lock:
+            session = self._live_sessions.get(chat_id)
+            if not session:
+                return
+            session["protocol_open"] = not bool(session.get("protocol_open"))
+            token = session["token"]
+            message_id = session["message_id"]
+        try:
+            self._push_live(token, chat_id, message_id, session, timeout=8)
+        except TelegramError as exc:
+            with self._lock:
+                self._error = str(exc)
+
+    def _set_live_interval(self, chat_id: int, seconds: int) -> None:
+        with self._live_lock:
+            session = self._live_sessions.get(chat_id)
+            if not session:
+                return
+            session["interval"] = int(seconds)
+            wake = session.get("wake")
+            token = session["token"]
+            message_id = session["message_id"]
+        if wake is not None:
+            wake.set()
+        try:
+            self._push_live(token, chat_id, message_id, session, timeout=8)
+        except TelegramError as exc:
+            with self._lock:
+                self._error = str(exc)
+
+    def _nudge_live(self, chat_id: int, minutes: int | None) -> None:
+        with self._live_lock:
+            session = self._live_sessions.get(chat_id)
+            if not session:
+                return
+            remaining = shift_live_deadline(session, minutes)
+            if remaining == 0:
+                session["reason"] = "истёк тайм-аут"
+                session["stop"].set()
+                return
+            token = session["token"]
+            message_id = session["message_id"]
+        try:
+            self._push_live(token, chat_id, message_id, session, timeout=8)
+        except TelegramError as exc:
+            with self._lock:
+                self._error = str(exc)
 
     def _stop_live(self, chat_id: int, reason: str = "остановлена пользователем") -> None:
         with self._live_lock:
@@ -1016,11 +1147,36 @@ class TelegramBridge:
             return
         if not self._known(int(chat_id)):
             return
-        if data == "live:stop":
+        if data == "live:stop" or data.startswith("live:"):
             if not chat_can(self._chat_item(chat_id), "live_view"):
                 self._deny(chat_id)
                 return
-            self._stop_live(int(chat_id))
+            if data == "live:stop":
+                self._stop_live(int(chat_id))
+                return
+            spec = data[5:]
+            if spec == "proto":
+                self._toggle_protocol(int(chat_id))
+                return
+            if spec == "inf":
+                self._nudge_live(int(chat_id), None)
+                return
+            if spec.startswith("s"):
+                try:
+                    seconds = int(spec[1:])
+                except ValueError:
+                    return
+                if seconds not in {1, 5, 10}:
+                    return
+                self._set_live_interval(int(chat_id), seconds)
+                return
+            try:
+                minutes = int(spec)
+            except ValueError:
+                return
+            if minutes not in {-1, -5, -30, 1, 5, 30}:
+                return
+            self._nudge_live(int(chat_id), minutes)
             return
         if not callback_fresh(query):
             self._notice(chat_id, "cancel", "Кнопка устарела. Нажмите действие ещё раз.")
@@ -1695,7 +1851,7 @@ def help_text(username: str) -> str:
         "ПК — выключение, сон, перезагрузка и гибернация.\n"
         "ПО — скриншот и перезапуск программы.\n"
         "Отчёты — состояние, журнал, отчёт дня в Markdown и сводка в HTML.\n"
-        "Трансляция — живое состояние ИБП с обновлением каждые 3 секунды.\n"
+        "Трансляция — живая карточка и суточные кВт·ч. Кнопки меняют срок и частоту, повторное ∞ возвращает счётчик.\n"
         "Слева от поля ввода — состояние, скриншот и журнал.\n"
         "Новый чат привязывается кодом из программы, без /start."
     )
@@ -1722,6 +1878,353 @@ def clock(total) -> str:
     if minutes:
         return f"{minutes} мин {secs:02d} с"
     return f"{secs} с"
+
+
+_SHUTDOWN_LABEL = {
+    "off": "Выключение ПК",
+    "reboot": "Перезагрузка ПК",
+    "battery": "Выключение от батареи",
+}
+
+
+def _rich(value) -> str:
+    text = " ".join(str("" if value is None else value).split())
+    text = text.replace("\\", "\\\\")
+    for char in ("*", "_", "`", "[", "]"):
+        text = text.replace(char, "\\" + char)
+    return text.replace("<", "&lt;")
+
+
+def _bar(percent, width: int = 12) -> str:
+    try:
+        value = max(0.0, min(100.0, float(percent)))
+    except (TypeError, ValueError):
+        return "░" * width
+    filled = int(round(value / 100 * width))
+    if value > 0 and filled == 0:
+        filled = 1
+    if value < 100 and filled == width:
+        filled = width - 1
+    return "█" * filled + "░" * (width - filled)
+
+
+def _needle(value, low, high, width: int = 16) -> str:
+    try:
+        current = float(value)
+        start = float(low)
+        end = float(high)
+    except (TypeError, ValueError):
+        return "░" * width
+    if end <= start:
+        return "░" * width
+    pos = int(round((current - start) / (end - start) * (width - 1)))
+    pos = max(0, min(width - 1, pos))
+    return "░" * pos + "█" + "░" * (width - 1 - pos)
+
+
+def _pct(value, warn: bool) -> str:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return "**—**"
+    label = f"{fmt(value, 0)}%"
+    return f"=={label}==" if warn else f"**{label}**"
+
+
+def _measure(value, unit: str, digits: int = 1, warn: bool = False) -> str:
+    shown = fmt(value, digits)
+    if shown == "—":
+        return "**—**"
+    label = f"{shown} {unit}"
+    return f"=={label}==" if warn else f"**{label}**"
+
+
+def _task(done: bool, label: str, mark: str) -> str:
+    return f"- [{'x' if done else ' '}] {mark} {label}"
+
+
+def _share_bar(part, whole, width: int = 12) -> str:
+    try:
+        part_f = max(0.0, float(part))
+        whole_f = max(0.0, float(whole))
+    except (TypeError, ValueError):
+        return "░" * width
+    if whole_f <= 0:
+        return "░" * width
+    filled = int(round(width * min(part_f, whole_f) / whole_f))
+    filled = max(0, min(width, filled))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _kwh(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "**—**"
+    text = f"{number:.3f}".rstrip("0").rstrip(".")
+    return f"**{text} кВт·ч**"
+
+
+def _day_block(energy: dict) -> str:
+    total = energy.get("energyKwh")
+    mains = energy.get("energyKwhMains")
+    battery = energy.get("energyKwhBattery")
+    lines = [
+        "## 📈 Сутки",
+        f"`{_share_bar(mains, total)}` {_kwh(total)}",
+        "_⚡ сеть · 🔋 батарея_",
+        "",
+        "| Показатель | Значение |",
+        "|:---|---:|",
+        f"| Всего | {_kwh(total)} |",
+        f"| Сеть | {_kwh(mains)} |",
+        f"| Батарея | {_kwh(battery)} |",
+    ]
+    if energy.get("avgW") is not None:
+        lines.append(f"| Среднее | **{fmt(energy.get('avgW'), 0)} Вт** |")
+    if energy.get("peakW") is not None:
+        lines.append(f"| Пик | **{fmt(energy.get('peakW'), 0)} Вт** |")
+    if energy.get("onBatteryMinutes") is not None:
+        lines.append(f"| На батарее | **{fmt(energy.get('onBatteryMinutes'), 0)} мин** |")
+    return "\n".join(lines)
+
+
+def _tone(reading: dict | None) -> str:
+    if not reading:
+        return "⚪"
+    if reading.get("fault") or reading.get("shutdown") or reading.get("shutdown_seconds") is not None:
+        return "🔴"
+    if reading.get("on_battery") or reading.get("mains_ok") is False:
+        return "🟠"
+    state = reading.get("voltage_state")
+    try:
+        hot = float(reading.get("load_pct")) >= 80
+    except (TypeError, ValueError):
+        hot = False
+    if reading.get("battery_low") or reading.get("battery_loose") or hot or state not in {None, "", "ok", "idle"}:
+        return "🟡"
+    return "🟢"
+
+
+def _boost_line(reading: dict) -> str:
+    try:
+        delta = float(reading.get("output_v")) - float(reading.get("input_v"))
+    except (TypeError, ValueError):
+        return "Стабилизатор держит напряжение"
+    if reading.get("stabilizer_dir") == "down" or delta < 0:
+        return f"Стабилизатор: вход выше выхода на {abs(delta):.1f} В"
+    return f"Стабилизатор: выход выше входа на {abs(delta):.1f} В"
+
+
+def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False) -> str:
+    updated = reading.get("updated_at") if reading else None
+    try:
+        unix = int(float(updated)) if updated else int(time.time())
+    except (TypeError, ValueError):
+        unix = int(time.time())
+    stamp = time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(unix))
+    blocks = [
+        f"# {_tone(reading)} {APP_NAME}",
+        "## 📡 Живая трансляция",
+        f"Обновлено ![{stamp}](tg://time?unix={unix}&format=wDT)",
+    ]
+    if not reading:
+        quote = ["> ИБП пока молчит."]
+        if message:
+            quote.append(f"> {_rich(message)}")
+        blocks.append("\n".join(quote))
+        if energy is not None:
+            blocks.append(_day_block(energy))
+        return "\n\n".join(blocks)
+
+    quote = [f"> <u>{_rich(reading.get('mode_label') or 'Режим не определён')}</u>"]
+    if message:
+        quote.append(f"> {_rich(message)}")
+    if reading.get("voltage_note"):
+        quote.append(f"> {_rich(reading.get('voltage_note'))}")
+    if reading.get("battery_loose"):
+        quote.append("> ==Напряжение батареи скачет, похоже она отключена==")
+    swap = reading.get("battery_swap")
+    if isinstance(swap, dict) and swap.get("from") is not None and swap.get("to") is not None:
+        quote.append(f"> Пакет сменился: **{fmt(swap.get('from'))} → {fmt(swap.get('to'))} В**")
+    if reading.get("battery_boost"):
+        quote.append(f"> {_rich(_boost_line(reading))}")
+    if reading.get("shutdown_seconds") is not None:
+        label = _SHUTDOWN_LABEL.get(str(reading.get("shutdown_kind") or ""), "Выключение ПК")
+        quote.append(f"> =={_rich(label)} через {clock(reading.get('shutdown_seconds'))}==")
+    if reading.get("ups_kind"):
+        quote.append(f"> {_rich(reading.get('ups_kind'))}")
+    blocks.append("\n".join(quote))
+
+    limits = reading.get("volt_limits") if isinstance(reading.get("volt_limits"), dict) else {}
+    low = limits.get("crit_low", 180)
+    high = limits.get("crit_high", 250)
+    mains = bool(reading.get("mains_ok"))
+    state = reading.get("voltage_state")
+    network = ["## ⚡ Сеть" if mains else "## 🔌 Сеть"]
+    if not mains:
+        network.append("~~Сети нет~~")
+    network.extend([
+        f"`{_needle(reading.get('input_v'), low, high)}` {_measure(reading.get('input_v'), 'В', warn=state in {'low', 'high', 'crit_low', 'crit_high'})}",
+        f"_{fmt(low, 0)} В · шкала · {fmt(high, 0)} В_",
+        "",
+        "| Показатель | Значение |",
+        "|:---|---:|",
+        f"| Выход | {_measure(reading.get('output_v'), 'В')} |",
+        f"| Частота | {_measure(reading.get('frequency'), 'Гц')} |",
+    ])
+    if reading.get("temperature") is not None:
+        network.append(f"| Температура | {_measure(reading.get('temperature'), '°C')} |")
+    blocks.append("\n".join(network))
+
+    battery_pct = reading.get("battery_pct")
+    try:
+        battery_warn = float(battery_pct) <= 20 or bool(reading.get("battery_low"))
+    except (TypeError, ValueError):
+        battery_warn = bool(reading.get("battery_low"))
+    battery = [
+        "## 🪫 Батарея" if battery_warn else "## 🔋 Батарея",
+        f"`{_bar(battery_pct)}` {_pct(battery_pct, battery_warn)}",
+        "",
+        "| Показатель | Значение |",
+        "|:---|---:|",
+        f"| Напряжение | {_measure(reading.get('battery_v'), 'В')} |",
+    ]
+    watt_hours = reading.get("battery_wh")
+    watt_full = reading.get("battery_wh_full")
+    if watt_hours is not None and watt_full:
+        battery.append(f"| Энергия | **{fmt(watt_hours, 0)} / {fmt(watt_full, 0)} Вт·ч** |")
+    if reading.get("runtime_min") is not None:
+        battery.append(f"| Автономия | **≈ {fmt(reading.get('runtime_min'), 0)} мин** |")
+    if reading.get("on_battery") and reading.get("discharge_seconds"):
+        battery.append(f"| Разряд | **{clock(reading.get('discharge_seconds'))}** |")
+    blocks.append("\n".join(battery))
+
+    load_pct = reading.get("load_pct")
+    try:
+        load_warn = float(load_pct) >= 80
+    except (TypeError, ValueError):
+        load_warn = False
+    load = [
+        "## ⚠️ Нагрузка" if load_warn else "## 📊 Нагрузка",
+        f"`{_bar(load_pct)}` {_pct(load_pct, load_warn)}",
+    ]
+    if reading.get("load_w") is not None:
+        load.append(f"≈ **{fmt(reading.get('load_w'), 0)} Вт**")
+    blocks.append("\n".join(load))
+    if energy is not None:
+        blocks.append(_day_block(energy))
+
+    blocks.append("\n".join([
+        "## Флаги",
+        "",
+        _task(mains, "Сеть", "🟢" if mains else "🔴"),
+        _task(bool(reading.get("on_battery")), "Работа от батареи", "🟠" if reading.get("on_battery") else "⚫"),
+        _task(bool(reading.get("battery_low")), "Низкий заряд", "🔴" if reading.get("battery_low") else "⚫"),
+        _task(bool(reading.get("avr")), "AVR", "🟡" if reading.get("avr") else "⚫"),
+        _task(bool(reading.get("fault")), "Авария", "🔴" if reading.get("fault") else "⚫"),
+        _task(bool(reading.get("test")), "Тест батареи", "🟡" if reading.get("test") else "⚫"),
+        _task(bool(reading.get("shutdown")), "Выключение ИБП", "🔴" if reading.get("shutdown") else "⚫"),
+        _task(bool(reading.get("beeper")), "Зуммер", "🟢" if reading.get("beeper") else "⚫"),
+    ]))
+
+    raw = " ".join(str(reading.get("raw") or "").replace("`", "'").replace("<", "&lt;").split())
+    extra = []
+    if raw:
+        extra.append(f"`{raw}`")
+    if limits:
+        extra.append(
+            "Пороги: "
+            f"{fmt(limits.get('crit_low'), 0)} / {fmt(limits.get('low'), 0)} / "
+            f"{fmt(limits.get('high'), 0)} / {fmt(limits.get('crit_high'), 0)} В"
+        )
+    if extra and protocol_open:
+        blocks.append("\n".join(["## 📋 Протокол и пороги", "", *extra]))
+    return "\n\n".join(blocks)
+
+
+def shift_live_deadline(session: dict, minutes: int | None) -> float | None:
+    """Сдвигает срок сеанса. None включает ∞, повторный None возвращает сохранённый счётчик."""
+    now = time.monotonic()
+    if minutes is None:
+        if session.get("infinite"):
+            remaining = max(0.0, float(session.get("frozen_remaining") or 0))
+            session["infinite"] = False
+            session["started_at"] = now
+            session["timeout"] = remaining
+            return remaining
+        elapsed = now - float(session["started_at"])
+        session["frozen_remaining"] = max(0.0, float(session["timeout"]) - elapsed)
+        session["infinite"] = True
+        return None
+    if session.get("infinite"):
+        base = float(session.get("frozen_remaining") or 0)
+        session["infinite"] = False
+        session["frozen_remaining"] = 0
+        remaining = max(0.0, base + int(minutes) * 60)
+        session["started_at"] = now
+        session["timeout"] = remaining
+        return remaining
+    elapsed = now - float(session["started_at"])
+    remaining = max(0.0, float(session["timeout"]) - elapsed + int(minutes) * 60)
+    session["timeout"] = elapsed + remaining
+    return remaining
+
+
+def compose_live_markdown(body: str, *, remaining=None, total=None, interval=None, pin_error="", finished="", infinite=False) -> str:
+    parts = []
+    if finished:
+        parts.extend([f"> **Трансляция завершена:** {_rich(finished)}", ""])
+    parts.append(str(body or "").rstrip())
+    if finished:
+        parts.extend([
+            "",
+            '<tg-button type="disabled" style="danger">Трансляция завершена</tg-button>',
+        ])
+        return "\n".join(parts).strip()
+    parts.extend(["", "---", "", "## ⏱ Сеанс"])
+    if infinite:
+        parts.append(f"`{_bar(100)}` **∞**")
+    elif remaining is not None and total:
+        try:
+            percent = max(0.0, min(100.0, 100 * float(remaining) / float(total)))
+        except (TypeError, ValueError, ZeroDivisionError):
+            percent = None
+        if percent is not None:
+            parts.append(f"`{_bar(percent)}` осталось **{clock(remaining)}**")
+    if interval:
+        parts.append(f"_Обновление каждые {int(interval)} с_")
+    if pin_error:
+        parts.extend(["", "> Закрепить не удалось. Нужны права бота на закрепление."])
+    return "\n".join(parts).strip()
+
+
+def _live_keyboard(active: bool, interval=None, protocol_open: bool = False) -> dict:
+    if not active:
+        return {"inline_keyboard": []}
+    def cell(text: str, data: str, style: str) -> dict:
+        return {"text": text, "callback_data": data, "style": style}
+    def pace(seconds: int) -> dict:
+        mark = "● " if interval is not None and int(interval) == seconds else ""
+        return cell(f"{mark}{seconds} с", f"live:s{seconds}", "primary")
+    return {"inline_keyboard": [
+        [
+            cell("-1 мин", "live:-1", "danger"),
+            cell("-5 мин", "live:-5", "danger"),
+            cell("-30 мин", "live:-30", "danger"),
+        ],
+        [
+            cell("+1 мин", "live:+1", "success"),
+            cell("+5 мин", "live:+5", "success"),
+            cell("+30 мин", "live:+30", "success"),
+        ],
+        [pace(1), pace(5), pace(10)],
+        [cell("Скрыть протокол" if protocol_open else "Протокол и пороги", "live:proto", "success" if protocol_open else "primary")],
+        [
+            cell("∞", "live:inf", "primary"),
+            cell("Остановить трансляцию", "live:stop", "danger"),
+        ],
+    ]}
 
 
 def _times(count: int) -> str:

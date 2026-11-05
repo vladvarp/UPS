@@ -1,3 +1,4 @@
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -22,8 +23,11 @@ from ups.telegram import (
     event_pref,
     extract_pair_code,
     format_alert,
+    compose_live_markdown,
+    shift_live_deadline,
     format_events,
     format_day_report,
+    format_live_markdown,
     format_report,
     split_telegram_text,
     parse_clock,
@@ -217,11 +221,12 @@ class ReportTests(unittest.TestCase):
                 return "UPS · ЖИВАЯ ТРАНСЛЯЦИЯ"
 
         calls = []
+        sent_ids = iter([77, 78])
 
         def api(_token, method, payload=None, timeout=12):
             calls.append((method, payload or {}))
-            if method == "sendMessage":
-                return {"result": {"message_id": 77}}
+            if method in {"sendMessage", "sendRichMessage"}:
+                return {"result": {"message_id": next(sent_ids)}}
             return {"result": True}
 
         class DummyThread:
@@ -236,16 +241,171 @@ class ReportTests(unittest.TestCase):
         bot._token = "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         with patch("ups.telegram._api", side_effect=api), patch("ups.telegram.threading.Thread", DummyThread):
             bot._start_live(7)
-            bot._start_live(7)
             session = bot._live_sessions[7]
+            started = session["started_at"]
+            bot._start_live(7)
+            self.assertIs(bot._live_sessions[7], session)
+            self.assertEqual(session["started_at"], started)
             self.assertEqual(session["timeout"], 600)
+            self.assertEqual(session["message_id"], 78)
             self.assertEqual(session["interval"], 5)
-            self.assertEqual([method for method, _payload in calls].count("sendMessage"), 1)
-            self.assertIn(("pinChatMessage", {"chat_id": 7, "message_id": 77, "disable_notification": True}), calls)
+            sent = [payload for method, payload in calls if method == "sendRichMessage"]
+            self.assertEqual(len(sent), 2)
+            self.assertTrue(sent[1].get("disable_notification"))
+            self.assertIn("UPS · ЖИВАЯ ТРАНСЛЯЦИЯ", sent[0]["rich_message"]["markdown"])
+            labels = [
+                button["callback_data"]
+                for row in sent[0]["reply_markup"]["inline_keyboard"]
+                for button in row
+            ]
+            self.assertEqual(labels, [
+                "live:-1", "live:-5", "live:-30",
+                "live:+1", "live:+5", "live:+30",
+                "live:s1", "live:s5", "live:s10",
+                "live:proto",
+                "live:inf", "live:stop",
+            ])
+            self.assertEqual([method for method, _payload in calls].count("sendMessage"), 0)
+            self.assertIn(("pinChatMessage", {"chat_id": 7, "message_id": 78, "disable_notification": True}), calls)
+            self.assertIn(("deleteMessage", {"chat_id": 7, "message_id": 77}), calls)
             session["stop"].set()
             bot._live_loop(7, session)
         self.assertIn("unpinChatMessage", [method for method, _payload in calls])
+        final = [payload for method, payload in calls if method == "editMessageText"][-1]
+        self.assertIn("Трансляция завершена", final["rich_message"]["markdown"])
+        self.assertEqual(final["reply_markup"], {"inline_keyboard": []})
         self.assertNotIn(7, bot._live_sessions)
+
+    def test_live_markdown_is_a_rich_card(self):
+        text = format_live_markdown({
+            "mains_ok": False,
+            "input_v": 0,
+            "output_v": 215.2,
+            "frequency": 50,
+            "temperature": 31,
+            "load_pct": 90,
+            "load_w": 630,
+            "battery_v": 24.1,
+            "battery_pct": 15,
+            "battery_wh": 40,
+            "battery_wh_full": 240,
+            "runtime_min": 8,
+            "on_battery": True,
+            "discharge_seconds": 95,
+            "mode_label": "Работа от батареи",
+            "ups_kind": "Онлайн",
+            "voltage_state": "idle",
+            "battery_low": True,
+            "avr": False,
+            "fault": False,
+            "test": False,
+            "shutdown": False,
+            "beeper": True,
+            "raw": "(000.0 000.0 215.2 090 50.0 24.1 31.0 10000001",
+            "volt_limits": {"crit_low": 180, "low": 200, "high": 240, "crit_high": 250},
+            "updated_at": 1762344552,
+        }, "Связь есть")
+        self.assertIn("# 🟠 UPS", text)
+        self.assertIn("## 📡 Живая трансляция", text)
+        self.assertIn("## 🔌 Сеть", text)
+        self.assertIn("## 🪫 Батарея", text)
+        self.assertIn("## ⚠️ Нагрузка", text)
+        self.assertIn("tg://time?unix=1762344552&format=wDT", text)
+        self.assertIn("<u>Работа от батареи</u>", text)
+        self.assertIn("~~Сети нет~~", text)
+        self.assertIn("| Выход |", text)
+        self.assertIn("**0.0 В**", text)
+        self.assertIn("| Энергия | **40 / 240 Вт·ч** |", text)
+        self.assertIn("`█", text)
+        self.assertIn("==15%==", text)
+        self.assertIn("==90%==", text)
+        self.assertIn("- [x] 🟠 Работа от батареи", text)
+        self.assertIn("- [ ] 🔴 Сеть", text)
+        self.assertNotIn("000.0", text)
+        self.assertNotIn("<details", text)
+        opened = format_live_markdown({
+            "mains_ok": False,
+            "raw": "(000.0 000.0 215.2 090 50.0 24.1 31.0 10000001",
+            "volt_limits": {"crit_low": 180, "low": 200, "high": 240, "crit_high": 250},
+        }, protocol_open=True)
+        self.assertIn("## 📋 Протокол и пороги", opened)
+        self.assertIn("000.0", opened)
+        self.assertNotIn("<details", opened)
+        card = compose_live_markdown(text, remaining=125, total=600, interval=3)
+        self.assertIn("## ⏱ Сеанс", card)
+        self.assertIn("осталось **2 мин 05 с**", card)
+        self.assertIn("_Обновление каждые 3 с_", card)
+        done = compose_live_markdown(text, finished="остановлена пользователем")
+        self.assertIn("> **Трансляция завершена:** остановлена пользователем", done)
+        self.assertIn('type="disabled"', done)
+        self.assertNotIn("live:stop", done)
+        escaped = format_live_markdown(None, "режим_1 *важно*")
+        self.assertIn("режим\\_1 \\*важно\\*", escaped)
+        self.assertIn("ИБП пока молчит.", escaped)
+        endless = compose_live_markdown("карточка", infinite=True, interval=3)
+        self.assertIn("**∞**", endless)
+        self.assertNotIn("осталось", endless)
+
+    def test_live_timer_buttons_have_no_settings_cap(self):
+        session = {"started_at": time.monotonic() - 100, "timeout": 600}
+        started = session["started_at"]
+        for _ in range(4):
+            shift_live_deadline(session, 30)
+        self.assertEqual(session["started_at"], started)
+        self.assertGreater(session["timeout"], 7200)
+        shift_live_deadline(session, None)
+        self.assertTrue(session["infinite"])
+        frozen = session["frozen_remaining"]
+        restored = shift_live_deadline(session, None)
+        self.assertFalse(session.get("infinite"))
+        self.assertAlmostEqual(restored, frozen, delta=1)
+        shift_live_deadline(session, None)
+        shift_live_deadline(session, 5)
+        self.assertFalse(session["infinite"])
+        self.assertAlmostEqual(session["timeout"], frozen + 300, delta=1)
+        shift_live_deadline(session, -30)
+        self.assertLess(session["timeout"], frozen)
+        day = format_live_markdown({"mains_ok": True, "input_v": 220, "output_v": 220}, energy={
+            "energyKwh": 1.25,
+            "energyKwhMains": 1.1,
+            "energyKwhBattery": 0.15,
+            "avgW": 180,
+            "peakW": 420,
+        })
+        self.assertIn("## 📈 Сутки", day)
+        self.assertIn("⚡ сеть", day)
+        self.assertIn("**1.25 кВт·ч**", day)
+        self.assertIn("**0.15 кВт·ч**", day)
+        self.assertIn("сеть", day)
+        self.assertIn("420", day)
+
+    def test_live_interval_button_updates_session(self):
+        class Host:
+            def telegram_live_text(self):
+                return "карточка"
+
+        bot = TelegramBridge(Host())
+        bot._token = "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        wake = threading.Event()
+        bot._live_sessions[7] = {
+            "token": bot._token,
+            "message_id": 3,
+            "started_at": time.monotonic(),
+            "timeout": 600,
+            "interval": 3,
+            "pin_error": "",
+            "stop": threading.Event(),
+            "wake": wake,
+            "reason": "",
+        }
+        with patch("ups.telegram._api", return_value={"result": True}):
+            bot._set_live_interval(7, 1)
+        self.assertEqual(bot._live_sessions[7]["interval"], 1)
+        self.assertTrue(wake.is_set())
+        bot._toggle_protocol(7)
+        self.assertTrue(bot._live_sessions[7]["protocol_open"])
+        bot._toggle_protocol(7)
+        self.assertFalse(bot._live_sessions[7]["protocol_open"])
 
     def test_report_counts_outages(self):
         points = [{"in": 220, "load": 30}, {"in": 210, "load": 40}]
