@@ -897,12 +897,15 @@ class TelegramBridge:
                 if self._live_sessions.get(chat_id) is session:
                     self._live_sessions.pop(chat_id, None)
 
-    def _live_card(self, protocol_open: bool = False) -> str:
+    def _live_card(self, protocol_open: bool = False, tables_open: bool = False) -> str:
         render = self._host.telegram_live_text
         try:
-            return render(protocol_open=protocol_open)
+            return render(protocol_open=protocol_open, tables_open=tables_open)
         except TypeError:
-            return render()
+            try:
+                return render(protocol_open=protocol_open)
+            except TypeError:
+                return render()
 
     def _live_markdown(self, session: dict | None, finished: str = "") -> str:
         remaining = None
@@ -925,7 +928,10 @@ class TelegramBridge:
             elif total and started is not None:
                 remaining = max(0, int(total - (time.monotonic() - float(started))))
         return compose_live_markdown(
-            self._live_card(bool(session and session.get("protocol_open"))),
+            self._live_card(
+                bool(session and session.get("protocol_open")),
+                bool(session and session.get("tables_open")),
+            ),
             remaining=remaining,
             total=total,
             interval=interval,
@@ -944,7 +950,9 @@ class TelegramBridge:
             "reply_markup": _live_keyboard(
                 not finished,
                 None if finished or session is None else session.get("interval"),
-                bool(session and session.get("protocol_open")),
+                protocol_open=bool(session and session.get("protocol_open")),
+                tables_open=bool(session and session.get("tables_open")),
+                controls_open=bool(session and session.get("controls_open")),
             ),
         }
         if message_id is None:
@@ -992,11 +1000,14 @@ class TelegramBridge:
             pass
 
     def _toggle_protocol(self, chat_id: int) -> None:
+        self._toggle_live_flag(chat_id, "protocol_open")
+
+    def _toggle_live_flag(self, chat_id: int, key: str) -> None:
         with self._live_lock:
             session = self._live_sessions.get(chat_id)
             if not session:
                 return
-            session["protocol_open"] = not bool(session.get("protocol_open"))
+            session[key] = not bool(session.get(key))
             token = session["token"]
             message_id = session["message_id"]
         try:
@@ -1156,7 +1167,13 @@ class TelegramBridge:
                 return
             spec = data[5:]
             if spec == "proto":
-                self._toggle_protocol(int(chat_id))
+                self._toggle_live_flag(int(chat_id), "protocol_open")
+                return
+            if spec == "tables":
+                self._toggle_live_flag(int(chat_id), "tables_open")
+                return
+            if spec == "time":
+                self._toggle_live_flag(int(chat_id), "controls_open")
                 return
             if spec == "inf":
                 self._nudge_live(int(chat_id), None)
@@ -1851,7 +1868,7 @@ def help_text(username: str) -> str:
         "ПК — выключение, сон, перезагрузка и гибернация.\n"
         "ПО — скриншот и перезапуск программы.\n"
         "Отчёты — состояние, журнал, отчёт дня в Markdown и сводка в HTML.\n"
-        "Трансляция — живая карточка и суточные кВт·ч. Кнопки меняют срок и частоту, повторное ∞ возвращает счётчик.\n"
+        "Трансляция — живая карточка и суточные кВт·ч. «Время» открывает срок и частоту, повторное ∞ возвращает счётчик.\n"
         "Слева от поля ввода — состояние, скриншот и журнал.\n"
         "Новый чат привязывается кодом из программы, без /start."
     )
@@ -1908,18 +1925,32 @@ def _bar(percent, width: int = 12) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def _needle(value, low, high, width: int = 16) -> str:
+def _mains_gauge(value, limits: dict | None, width: int = 21) -> str:
+    bands = limits or {}
     try:
-        current = float(value)
-        start = float(low)
-        end = float(high)
+        crit_lo = float(bands.get("crit_low", 180))
+        lo = float(bands.get("low", 200))
+        hi = float(bands.get("high", 240))
+        crit_hi = float(bands.get("crit_high", 250))
     except (TypeError, ValueError):
-        return "░" * width
-    if end <= start:
-        return "░" * width
-    pos = int(round((current - start) / (end - start) * (width - 1)))
-    pos = max(0, min(width - 1, pos))
-    return "░" * pos + "█" + "░" * (width - 1 - pos)
+        return "·" * width
+    if crit_hi <= crit_lo:
+        return "·" * width
+    span = crit_hi - crit_lo
+
+    def at(volt: float) -> int:
+        pos = int(round((volt - crit_lo) / span * (width - 1)))
+        return max(0, min(width - 1, pos))
+
+    left, right = sorted((at(lo), at(hi)))
+    cells = ["═" if left < index < right else "·" for index in range(width)]
+    cells[left] = "│"
+    cells[right] = "│"
+    try:
+        cells[at(float(value))] = "█"
+    except (TypeError, ValueError):
+        pass
+    return "".join(cells)
 
 
 def _pct(value, warn: bool) -> str:
@@ -1965,20 +1996,24 @@ def _kwh(value) -> str:
     return f"**{text} кВт·ч**"
 
 
-def _day_block(energy: dict) -> str:
+def _day_graph(energy: dict) -> str:
     total = energy.get("energyKwh")
     mains = energy.get("energyKwhMains")
-    battery = energy.get("energyKwhBattery")
+    return "\n".join([
+        f"📈 `{_share_bar(mains, total)}` {_kwh(total)}",
+        "_⚡ · 🔋_",
+    ])
+
+
+def _day_table(energy: dict) -> list[str]:
     lines = [
-        "## 📈 Сутки",
-        f"`{_share_bar(mains, total)}` {_kwh(total)}",
-        "_⚡ сеть · 🔋 батарея_",
+        "### 📈 Сутки",
         "",
         "| Показатель | Значение |",
         "|:---|---:|",
-        f"| Всего | {_kwh(total)} |",
-        f"| Сеть | {_kwh(mains)} |",
-        f"| Батарея | {_kwh(battery)} |",
+        f"| Всего | {_kwh(energy.get('energyKwh'))} |",
+        f"| Сеть | {_kwh(energy.get('energyKwhMains'))} |",
+        f"| Батарея | {_kwh(energy.get('energyKwhBattery'))} |",
     ]
     if energy.get("avgW") is not None:
         lines.append(f"| Среднее | **{fmt(energy.get('avgW'), 0)} Вт** |")
@@ -1986,7 +2021,7 @@ def _day_block(energy: dict) -> str:
         lines.append(f"| Пик | **{fmt(energy.get('peakW'), 0)} Вт** |")
     if energy.get("onBatteryMinutes") is not None:
         lines.append(f"| На батарее | **{fmt(energy.get('onBatteryMinutes'), 0)} мин** |")
-    return "\n".join(lines)
+    return lines
 
 
 def _tone(reading: dict | None) -> str:
@@ -2016,7 +2051,7 @@ def _boost_line(reading: dict) -> str:
     return f"Стабилизатор: выход выше входа на {abs(delta):.1f} В"
 
 
-def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False) -> str:
+def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False, tables_open: bool = False) -> str:
     updated = reading.get("updated_at") if reading else None
     try:
         unix = int(float(updated)) if updated else int(time.time())
@@ -2034,7 +2069,9 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
             quote.append(f"> {_rich(message)}")
         blocks.append("\n".join(quote))
         if energy is not None:
-            blocks.append(_day_block(energy))
+            blocks.append(_day_graph(energy))
+            if tables_open:
+                blocks.append("\n".join(["## Таблицы", "", *_day_table(energy)]))
         return "\n\n".join(blocks)
 
     quote = [f"> <u>{_rich(reading.get('mode_label') or 'Режим не определён')}</u>"]
@@ -2057,25 +2094,23 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
     blocks.append("\n".join(quote))
 
     limits = reading.get("volt_limits") if isinstance(reading.get("volt_limits"), dict) else {}
-    low = limits.get("crit_low", 180)
-    high = limits.get("crit_high", 250)
     mains = bool(reading.get("mains_ok"))
     state = reading.get("voltage_state")
-    network = ["## ⚡ Сеть" if mains else "## 🔌 Сеть"]
+    network = [
+        f"{'⚡' if mains else '🔌'} `{_mains_gauge(reading.get('input_v'), limits)}` {_measure(reading.get('input_v'), 'В', warn=state in {'low', 'high', 'crit_low', 'crit_high'})}",
+    ]
     if not mains:
         network.append("~~Сети нет~~")
-    network.extend([
-        f"`{_needle(reading.get('input_v'), low, high)}` {_measure(reading.get('input_v'), 'В', warn=state in {'low', 'high', 'crit_low', 'crit_high'})}",
-        f"_{fmt(low, 0)} В · шкала · {fmt(high, 0)} В_",
+    network_table = [
+        "### ⚡ Сеть" if mains else "### 🔌 Сеть",
         "",
         "| Показатель | Значение |",
         "|:---|---:|",
         f"| Выход | {_measure(reading.get('output_v'), 'В')} |",
         f"| Частота | {_measure(reading.get('frequency'), 'Гц')} |",
-    ])
+    ]
     if reading.get("temperature") is not None:
-        network.append(f"| Температура | {_measure(reading.get('temperature'), '°C')} |")
-    blocks.append("\n".join(network))
+        network_table.append(f"| Температура | {_measure(reading.get('temperature'), '°C')} |")
 
     battery_pct = reading.get("battery_pct")
     try:
@@ -2083,8 +2118,10 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
     except (TypeError, ValueError):
         battery_warn = bool(reading.get("battery_low"))
     battery = [
-        "## 🪫 Батарея" if battery_warn else "## 🔋 Батарея",
-        f"`{_bar(battery_pct)}` {_pct(battery_pct, battery_warn)}",
+        f"{'🪫' if battery_warn else '🔋'} `{_bar(battery_pct)}` {_pct(battery_pct, battery_warn)}",
+    ]
+    battery_table = [
+        "### 🪫 Батарея" if battery_warn else "### 🔋 Батарея",
         "",
         "| Показатель | Значение |",
         "|:---|---:|",
@@ -2093,12 +2130,11 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
     watt_hours = reading.get("battery_wh")
     watt_full = reading.get("battery_wh_full")
     if watt_hours is not None and watt_full:
-        battery.append(f"| Энергия | **{fmt(watt_hours, 0)} / {fmt(watt_full, 0)} Вт·ч** |")
+        battery_table.append(f"| Энергия | **{fmt(watt_hours, 0)} / {fmt(watt_full, 0)} Вт·ч** |")
     if reading.get("runtime_min") is not None:
-        battery.append(f"| Автономия | **≈ {fmt(reading.get('runtime_min'), 0)} мин** |")
+        battery_table.append(f"| Автономия | **≈ {fmt(reading.get('runtime_min'), 0)} мин** |")
     if reading.get("on_battery") and reading.get("discharge_seconds"):
-        battery.append(f"| Разряд | **{clock(reading.get('discharge_seconds'))}** |")
-    blocks.append("\n".join(battery))
+        battery_table.append(f"| Разряд | **{clock(reading.get('discharge_seconds'))}** |")
 
     load_pct = reading.get("load_pct")
     try:
@@ -2106,14 +2142,21 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
     except (TypeError, ValueError):
         load_warn = False
     load = [
-        "## ⚠️ Нагрузка" if load_warn else "## 📊 Нагрузка",
-        f"`{_bar(load_pct)}` {_pct(load_pct, load_warn)}",
+        f"{'⚠️' if load_warn else '📊'} `{_bar(load_pct)}` {_pct(load_pct, load_warn)}",
     ]
     if reading.get("load_w") is not None:
         load.append(f"≈ **{fmt(reading.get('load_w'), 0)} Вт**")
-    blocks.append("\n".join(load))
+    blocks.append("\n".join(network))
     if energy is not None:
-        blocks.append(_day_block(energy))
+        blocks.append(_day_graph(energy))
+    blocks.append("\n".join(load))
+    blocks.append("\n".join(battery))
+    if tables_open:
+        table_lines = ["## Таблицы", "", *network_table]
+        if energy is not None:
+            table_lines.extend(["", *_day_table(energy)])
+        table_lines.extend(["", *battery_table])
+        blocks.append("\n".join(table_lines))
 
     blocks.append("\n".join([
         "## Флаги",
@@ -2199,7 +2242,7 @@ def compose_live_markdown(body: str, *, remaining=None, total=None, interval=Non
     return "\n".join(parts).strip()
 
 
-def _live_keyboard(active: bool, interval=None, protocol_open: bool = False) -> dict:
+def _live_keyboard(active: bool, interval=None, protocol_open: bool = False, tables_open: bool = False, controls_open: bool = False) -> dict:
     if not active:
         return {"inline_keyboard": []}
     def cell(text: str, data: str, style: str) -> dict:
@@ -2207,24 +2250,31 @@ def _live_keyboard(active: bool, interval=None, protocol_open: bool = False) -> 
     def pace(seconds: int) -> dict:
         mark = "● " if interval is not None and int(interval) == seconds else ""
         return cell(f"{mark}{seconds} с", f"live:s{seconds}", "primary")
-    return {"inline_keyboard": [
+    rows = []
+    if controls_open:
+        rows.extend([
+            [
+                cell("-1 мин", "live:-1", "danger"),
+                cell("-5 мин", "live:-5", "danger"),
+                cell("-30 мин", "live:-30", "danger"),
+            ],
+            [
+                cell("+1 мин", "live:+1", "success"),
+                cell("+5 мин", "live:+5", "success"),
+                cell("+30 мин", "live:+30", "success"),
+            ],
+            [pace(1), pace(5), pace(10)],
+            [cell("∞", "live:inf", "primary")],
+        ])
+    rows.extend([
         [
-            cell("-1 мин", "live:-1", "danger"),
-            cell("-5 мин", "live:-5", "danger"),
-            cell("-30 мин", "live:-30", "danger"),
+            cell("Скрыть время" if controls_open else "Время", "live:time", "success" if controls_open else "primary"),
+            cell("Скрыть таблицы" if tables_open else "Таблицы", "live:tables", "success" if tables_open else "primary"),
         ],
-        [
-            cell("+1 мин", "live:+1", "success"),
-            cell("+5 мин", "live:+5", "success"),
-            cell("+30 мин", "live:+30", "success"),
-        ],
-        [pace(1), pace(5), pace(10)],
         [cell("Скрыть протокол" if protocol_open else "Протокол и пороги", "live:proto", "success" if protocol_open else "primary")],
-        [
-            cell("∞", "live:inf", "primary"),
-            cell("Остановить трансляцию", "live:stop", "danger"),
-        ],
-    ]}
+        [cell("Остановить трансляцию", "live:stop", "danger")],
+    ])
+    return {"inline_keyboard": rows}
 
 
 def _times(count: int) -> str:

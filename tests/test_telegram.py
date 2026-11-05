@@ -28,6 +28,7 @@ from ups.telegram import (
     format_events,
     format_day_report,
     format_live_markdown,
+    _live_keyboard,
     format_report,
     split_telegram_text,
     parse_clock,
@@ -259,12 +260,22 @@ class ReportTests(unittest.TestCase):
                 for button in row
             ]
             self.assertEqual(labels, [
+                "live:time", "live:tables",
+                "live:proto",
+                "live:stop",
+            ])
+            opened = [
+                button["callback_data"]
+                for row in _live_keyboard(True, 5, controls_open=True)["inline_keyboard"]
+                for button in row
+            ]
+            self.assertEqual(opened[:8], [
                 "live:-1", "live:-5", "live:-30",
                 "live:+1", "live:+5", "live:+30",
-                "live:s1", "live:s5", "live:s10",
-                "live:proto",
-                "live:inf", "live:stop",
+                "live:s1", "live:s5",
             ])
+            self.assertIn("live:s10", opened)
+            self.assertIn("live:inf", opened)
             self.assertEqual([method for method, _payload in calls].count("sendMessage"), 0)
             self.assertIn(("pinChatMessage", {"chat_id": 7, "message_id": 78, "disable_notification": True}), calls)
             self.assertIn(("deleteMessage", {"chat_id": 7, "message_id": 77}), calls)
@@ -307,15 +318,39 @@ class ReportTests(unittest.TestCase):
         }, "Связь есть")
         self.assertIn("# 🟠 UPS", text)
         self.assertIn("## 📡 Живая трансляция", text)
-        self.assertIn("## 🔌 Сеть", text)
-        self.assertIn("## 🪫 Батарея", text)
-        self.assertIn("## ⚠️ Нагрузка", text)
+        self.assertIn("🔌 `", text)
+        self.assertNotIn("## 🔌", text)
+        self.assertIn("═", text)
+        self.assertIn("│", text)
+        self.assertNotIn("180 · 200–240 · 250 В", text)
+        self.assertIn("🪫 `", text)
+        self.assertNotIn("## 🪫", text)
+        self.assertIn("⚠️ `", text)
+        self.assertLess(text.index("🔌 `"), text.index("⚠️ `"))
+        self.assertLess(text.index("⚠️ `"), text.index("🪫 `"))
+        self.assertLess(text.index("🪫 `"), text.index("## Флаги"))
         self.assertIn("tg://time?unix=1762344552&format=wDT", text)
         self.assertIn("<u>Работа от батареи</u>", text)
         self.assertIn("~~Сети нет~~", text)
-        self.assertIn("| Выход |", text)
+        self.assertNotIn("| Выход |", text)
         self.assertIn("**0.0 В**", text)
-        self.assertIn("| Энергия | **40 / 240 Вт·ч** |", text)
+        self.assertNotIn("| Энергия | **40 / 240 Вт·ч** |", text)
+        shown = format_live_markdown({
+            "mains_ok": False,
+            "output_v": 215.2,
+            "battery_pct": 15,
+            "battery_low": True,
+            "battery_wh": 40,
+            "battery_wh_full": 240,
+            "load_pct": 90,
+        }, tables_open=True)
+        self.assertLess(shown.index("🔌 `"), shown.index("⚠️ `"))
+        self.assertLess(shown.index("⚠️ `"), shown.index("🪫 `"))
+        self.assertLess(shown.index("🪫 `"), shown.index("## Таблицы"))
+        self.assertLess(shown.index("### 🔌 Сеть"), shown.index("### 🪫 Батарея"))
+        self.assertLess(shown.index("## Таблицы"), shown.index("## Флаги"))
+        self.assertIn("| Выход |", shown)
+        self.assertIn("| Энергия | **40 / 240 Вт·ч** |", shown)
         self.assertIn("`█", text)
         self.assertIn("==15%==", text)
         self.assertIn("==90%==", text)
@@ -371,12 +406,18 @@ class ReportTests(unittest.TestCase):
             "energyKwhBattery": 0.15,
             "avgW": 180,
             "peakW": 420,
-        })
-        self.assertIn("## 📈 Сутки", day)
-        self.assertIn("⚡ сеть", day)
+        }, tables_open=True)
+        self.assertIn("📈 `", day)
+        self.assertIn("_⚡ · 🔋_", day)
+        self.assertNotIn("⚡ сеть", day)
+        self.assertLess(day.index("⚡ `"), day.index("📈 `"))
+        self.assertLess(day.index("📈 `"), day.index("📊 `"))
+        self.assertLess(day.index("📊 `"), day.index("🔋 `"))
+        self.assertLess(day.index("### ⚡ Сеть"), day.index("### 📈 Сутки"))
+        self.assertLess(day.index("### 📈 Сутки"), day.index("### 🔋 Батарея"))
         self.assertIn("**1.25 кВт·ч**", day)
         self.assertIn("**0.15 кВт·ч**", day)
-        self.assertIn("сеть", day)
+        self.assertIn("Сеть", day)
         self.assertIn("420", day)
 
     def test_live_interval_button_updates_session(self):
