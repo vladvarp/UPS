@@ -897,15 +897,18 @@ class TelegramBridge:
                 if self._live_sessions.get(chat_id) is session:
                     self._live_sessions.pop(chat_id, None)
 
-    def _live_card(self, protocol_open: bool = False, tables_open: bool = False) -> str:
+    def _live_card(self, protocol_open: bool = False, tables_open: bool = False, flags_open: bool = False) -> str:
         render = self._host.telegram_live_text
         try:
-            return render(protocol_open=protocol_open, tables_open=tables_open)
+            return render(protocol_open=protocol_open, tables_open=tables_open, flags_open=flags_open)
         except TypeError:
             try:
-                return render(protocol_open=protocol_open)
+                return render(protocol_open=protocol_open, tables_open=tables_open)
             except TypeError:
-                return render()
+                try:
+                    return render(protocol_open=protocol_open)
+                except TypeError:
+                    return render()
 
     def _live_markdown(self, session: dict | None, finished: str = "") -> str:
         remaining = None
@@ -931,6 +934,7 @@ class TelegramBridge:
             self._live_card(
                 bool(session and session.get("protocol_open")),
                 bool(session and session.get("tables_open")),
+                bool(session and session.get("flags_open")),
             ),
             remaining=remaining,
             total=total,
@@ -953,6 +957,7 @@ class TelegramBridge:
                 protocol_open=bool(session and session.get("protocol_open")),
                 tables_open=bool(session and session.get("tables_open")),
                 controls_open=bool(session and session.get("controls_open")),
+                flags_open=bool(session and session.get("flags_open")),
             ),
         }
         if message_id is None:
@@ -1171,6 +1176,9 @@ class TelegramBridge:
                 return
             if spec == "tables":
                 self._toggle_live_flag(int(chat_id), "tables_open")
+                return
+            if spec == "flags":
+                self._toggle_live_flag(int(chat_id), "flags_open")
                 return
             if spec == "time":
                 self._toggle_live_flag(int(chat_id), "controls_open")
@@ -1974,6 +1982,39 @@ def _task(done: bool, label: str, mark: str) -> str:
     return f"- [{'x' if done else ' '}] {mark} {label}"
 
 
+def _flag_rows(reading: dict, mains: bool) -> list[tuple[str, str, bool, str]]:
+    on_battery = bool(reading.get("on_battery"))
+    low = bool(reading.get("battery_low"))
+    avr = bool(reading.get("avr"))
+    fault = bool(reading.get("fault"))
+    test = bool(reading.get("test"))
+    shutdown = bool(reading.get("shutdown"))
+    beeper = bool(reading.get("beeper"))
+    return [
+        ("⚡", "Сеть", mains, "🟢" if mains else "🔴"),
+        ("🔋", "Работа от батареи", on_battery, "🟠" if on_battery else "⚫"),
+        ("🪫", "Низкий заряд", low, "🔴" if low else "⚫"),
+        ("⚙️", "AVR", avr, "🟡" if avr else "⚫"),
+        ("⚠️", "Авария", fault, "🔴" if fault else "⚫"),
+        ("🔍", "Тест батареи", test, "🟡" if test else "⚫"),
+        ("⏻", "Выключение ИБП", shutdown, "🔴" if shutdown else "⚫"),
+        ("🔔", "Зуммер", beeper, "🟢" if beeper else "⚫"),
+    ]
+
+
+def _flag_lamps(rows: list[tuple[str, str, bool, str]]) -> str:
+    icons = " | ".join(icon for icon, _label, _done, _mark in rows)
+    lamps = " | ".join(mark for _icon, _label, _done, mark in rows)
+    rule = "|".join(":---:" for _row in rows)
+    return "\n".join([f"| {icons} |", f"|{rule}|", f"| {lamps} |"])
+
+
+def _flag_list(rows: list[tuple[str, str, bool, str]]) -> str:
+    lines = ["## Флаги", ""]
+    lines.extend(_task(done, label, mark) for _icon, label, done, mark in rows)
+    return "\n".join(lines)
+
+
 def _share_bar(part, whole, width: int = 12) -> str:
     try:
         part_f = max(0.0, float(part))
@@ -2051,7 +2092,7 @@ def _boost_line(reading: dict) -> str:
     return f"Стабилизатор: выход выше входа на {abs(delta):.1f} В"
 
 
-def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False, tables_open: bool = False) -> str:
+def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False, tables_open: bool = False, flags_open: bool = False) -> str:
     updated = reading.get("updated_at") if reading else None
     try:
         unix = int(float(updated)) if updated else int(time.time())
@@ -2158,18 +2199,8 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
         table_lines.extend(["", *battery_table])
         blocks.append("\n".join(table_lines))
 
-    blocks.append("\n".join([
-        "## Флаги",
-        "",
-        _task(mains, "Сеть", "🟢" if mains else "🔴"),
-        _task(bool(reading.get("on_battery")), "Работа от батареи", "🟠" if reading.get("on_battery") else "⚫"),
-        _task(bool(reading.get("battery_low")), "Низкий заряд", "🔴" if reading.get("battery_low") else "⚫"),
-        _task(bool(reading.get("avr")), "AVR", "🟡" if reading.get("avr") else "⚫"),
-        _task(bool(reading.get("fault")), "Авария", "🔴" if reading.get("fault") else "⚫"),
-        _task(bool(reading.get("test")), "Тест батареи", "🟡" if reading.get("test") else "⚫"),
-        _task(bool(reading.get("shutdown")), "Выключение ИБП", "🔴" if reading.get("shutdown") else "⚫"),
-        _task(bool(reading.get("beeper")), "Зуммер", "🟢" if reading.get("beeper") else "⚫"),
-    ]))
+    rows = _flag_rows(reading, mains)
+    blocks.append(_flag_list(rows) if flags_open else _flag_lamps(rows))
 
     raw = " ".join(str(reading.get("raw") or "").replace("`", "'").replace("<", "&lt;").split())
     extra = []
@@ -2242,7 +2273,7 @@ def compose_live_markdown(body: str, *, remaining=None, total=None, interval=Non
     return "\n".join(parts).strip()
 
 
-def _live_keyboard(active: bool, interval=None, protocol_open: bool = False, tables_open: bool = False, controls_open: bool = False) -> dict:
+def _live_keyboard(active: bool, interval=None, protocol_open: bool = False, tables_open: bool = False, controls_open: bool = False, flags_open: bool = False) -> dict:
     if not active:
         return {"inline_keyboard": []}
     def cell(text: str, data: str, style: str) -> dict:
@@ -2270,6 +2301,7 @@ def _live_keyboard(active: bool, interval=None, protocol_open: bool = False, tab
         [
             cell("Скрыть время" if controls_open else "Время", "live:time", "success" if controls_open else "primary"),
             cell("Скрыть таблицы" if tables_open else "Таблицы", "live:tables", "success" if tables_open else "primary"),
+            cell("Скрыть флаги" if flags_open else "Флаги", "live:flags", "success" if flags_open else "primary"),
         ],
         [cell("Скрыть протокол" if protocol_open else "Протокол и пороги", "live:proto", "success" if protocol_open else "primary")],
         [cell("Остановить трансляцию", "live:stop", "danger")],

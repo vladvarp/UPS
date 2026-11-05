@@ -260,7 +260,7 @@ class ReportTests(unittest.TestCase):
                 for button in row
             ]
             self.assertEqual(labels, [
-                "live:time", "live:tables",
+                "live:time", "live:tables", "live:flags",
                 "live:proto",
                 "live:stop",
             ])
@@ -328,7 +328,8 @@ class ReportTests(unittest.TestCase):
         self.assertIn("⚠️ `", text)
         self.assertLess(text.index("🔌 `"), text.index("⚠️ `"))
         self.assertLess(text.index("⚠️ `"), text.index("🪫 `"))
-        self.assertLess(text.index("🪫 `"), text.index("## Флаги"))
+        self.assertLess(text.index("🪫 `"), text.index("| ⚡ | 🔋 | 🪫 |"))
+        self.assertNotIn("## Флаги", text)
         self.assertIn("tg://time?unix=1762344552&format=wDT", text)
         self.assertIn("<u>Работа от батареи</u>", text)
         self.assertIn("~~Сети нет~~", text)
@@ -348,14 +349,24 @@ class ReportTests(unittest.TestCase):
         self.assertLess(shown.index("⚠️ `"), shown.index("🪫 `"))
         self.assertLess(shown.index("🪫 `"), shown.index("## Таблицы"))
         self.assertLess(shown.index("### 🔌 Сеть"), shown.index("### 🪫 Батарея"))
-        self.assertLess(shown.index("## Таблицы"), shown.index("## Флаги"))
+        self.assertLess(shown.index("## Таблицы"), shown.index("| ⚡ | 🔋 | 🪫 |"))
         self.assertIn("| Выход |", shown)
         self.assertIn("| Энергия | **40 / 240 Вт·ч** |", shown)
         self.assertIn("`█", text)
         self.assertIn("==15%==", text)
         self.assertIn("==90%==", text)
-        self.assertIn("- [x] 🟠 Работа от батареи", text)
-        self.assertIn("- [ ] 🔴 Сеть", text)
+        self.assertIn("| 🔴 | 🟠 | 🔴 | ⚫ | ⚫ | ⚫ | ⚫ | 🟢 |", text)
+        self.assertNotIn("- [x] 🟠 Работа от батареи", text)
+        listed = format_live_markdown({
+            "mains_ok": False,
+            "on_battery": True,
+            "battery_low": True,
+            "beeper": True,
+        }, flags_open=True)
+        self.assertIn("## Флаги", listed)
+        self.assertIn("- [x] 🟠 Работа от батареи", listed)
+        self.assertIn("- [ ] 🔴 Сеть", listed)
+        self.assertNotIn("| ⚡ | 🔋 | 🪫 |", listed)
         self.assertNotIn("000.0", text)
         self.assertNotIn("<details", text)
         opened = format_live_markdown({

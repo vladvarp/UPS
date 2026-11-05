@@ -531,7 +531,7 @@ class Monitor:
             self._energy_cache = (now, report)
         return report
 
-    def telegram_live_text(self, protocol_open: bool = False, tables_open: bool = False) -> str:
+    def telegram_live_text(self, protocol_open: bool = False, tables_open: bool = False, flags_open: bool = False) -> str:
         with self._lock:
             reading = None if self._reading is None else dict(self._reading)
             message = self._message
@@ -541,6 +541,7 @@ class Monitor:
             self._today_energy(),
             protocol_open=bool(protocol_open),
             tables_open=bool(tables_open),
+            flags_open=bool(flags_open),
         )
 
     def telegram_day_text(self, stamp: str | None = None) -> str:
