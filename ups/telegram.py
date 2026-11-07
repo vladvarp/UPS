@@ -440,6 +440,7 @@ class TelegramBridge:
         self._digest_day = ""
         self._startup_sent = False
         self._boards: dict[int, str] = {}
+        self._menu_messages: dict[int, int] = {}
         self._live_lock = threading.Lock()
         self._live_sessions: dict[int, dict] = {}
         self._offset = _load_offset()
@@ -774,7 +775,8 @@ class TelegramBridge:
             timeout_minutes = int(settings.get("telegram_live_timeout", 10))
         except (TypeError, ValueError):
             timeout_minutes = 10
-        timeout_seconds = max(60, min(7200, timeout_minutes * 60))
+        timeout_seconds = max(60, min(24 * 3600, timeout_minutes * 60))
+        infinite = bool(settings.get("telegram_live_infinite"))
         try:
             interval_seconds = int(settings.get("telegram_live_interval", 3))
         except (TypeError, ValueError):
@@ -784,6 +786,8 @@ class TelegramBridge:
             "started_at": time.monotonic(),
             "timeout": timeout_seconds,
             "interval": interval_seconds,
+            "infinite": infinite,
+            "frozen_remaining": timeout_seconds if infinite else 0,
             "pin_error": "",
             "wake": threading.Event(),
         }
@@ -1078,12 +1082,12 @@ class TelegramBridge:
         code = extract_pair_code(text)
         if pair and code == pair:
             self._host.link_telegram_chat({"id": chat_id, "name": name})
-            self._open_menu(chat_id, "root", f"Готово. Этот чат получает сообщения UPS.\n\n{help_text(self._username)}")
+            self._open_menu(chat_id, "root", f"Готово. Этот чат получает сообщения UPS.\n\n{help_text(self._username)}", keep=True)
             return
         _send(
             self._token,
             chat_id,
-            "Напишите код из вкладки Телеграм в UPS. Только цифры, без /start.",
+            "Напишите код из вкладки Телеграм в UPS.",
         )
 
     def _send_markdown(self, chat_id: int, text: str, menu: str | None = None, chat: dict | None = None) -> None:
@@ -1237,9 +1241,31 @@ class TelegramBridge:
     def _board(self, chat_id) -> str:
         return self._boards.get(int(chat_id), "root")
 
-    def _open_menu(self, chat_id, name: str, text: str) -> None:
-        self._boards[int(chat_id)] = name
-        _send(self._token, chat_id, text, menu=name, chat=self._chat_item(chat_id))
+    def _open_menu(self, chat_id, name: str, text: str, keep: bool = False) -> None:
+        chat_id = int(chat_id)
+        if not keep and self._boards.get(chat_id) == name:
+            return
+        self._boards[chat_id] = name
+        chat = self._chat_item(chat_id)
+        if keep:
+            _send(self._token, chat_id, text, menu=name, chat=chat)
+            return
+        previous = self._menu_messages.get(chat_id)
+        try:
+            data = _send(self._token, chat_id, text, menu=name, chat=chat, silent=True)
+        except TelegramError as exc:
+            with self._lock:
+                self._error = str(exc)
+            return
+        message_id = (data.get("result") or {}).get("message_id")
+        if message_id is not None:
+            self._menu_messages[chat_id] = int(message_id)
+        if previous is None or message_id is None or int(previous) == int(message_id):
+            return
+        try:
+            _api(self._token, "deleteMessage", {"chat_id": chat_id, "message_id": previous}, timeout=5)
+        except TelegramError:
+            pass
 
     def _admin_home(self, chat_id, query: dict | None = None) -> None:
         settings = self._host.get_settings_raw()
@@ -1551,20 +1577,28 @@ class TelegramBridge:
             return
         self._startup_sent = True
         stamp = datetime.now().strftime("%H:%M")
-        self._broadcast_notice("startup", f"UPS запущен в {stamp}\n\n{self._host.telegram_status_text()}")
+        self._broadcast_notice("startup", f"> UPS запущен в {stamp}\n\n{self._host.telegram_status_text()}")
 
     def _notice(self, chat_id, code: str, text: str, inline: list | None = None, silent: bool = False) -> None:
         token = self._token
         if not token or not text:
             return
-        png = notify_image(code, card_title(code, text), text)
+        shown = _plain_notice(text) if _rich_notice(text) else text
+        png = notify_image(code, card_title(code, shown), shown)
         chat = self._chat_item(chat_id)
+        menu = None if inline else self._board(chat_id)
         try:
-            _send_photo(token, chat_id, png, text[:1024], inline=inline, menu=self._board(chat_id), chat=chat, silent=silent)
-            if len(text) > 1024:
-                _send(token, chat_id, text[1024:], menu=None if inline else self._board(chat_id), chat=chat, silent=silent)
+            _send_photo(token, chat_id, png, shown[:1024], inline=inline, menu=menu, chat=chat, silent=silent)
         except TelegramError:
-            _send(token, chat_id, text, menu=None if inline else self._board(chat_id), chat=chat, inline=inline, silent=silent)
+            if not _rich_notice(text):
+                _send(token, chat_id, text, menu=menu, chat=chat, inline=inline, silent=silent)
+                return
+        if not _rich_notice(text):
+            return
+        try:
+            _send_rich(token, chat_id, text, menu=menu, inline=inline, chat=chat, silent=silent)
+        except TelegramError:
+            _send(token, chat_id, text, menu=menu, chat=chat, inline=inline, silent=silent)
 
     def _broadcast_notice(self, code: str, text: str, force: bool = False) -> None:
         token = self._token
@@ -1677,80 +1711,41 @@ def _plain(text: str) -> str:
     return " ".join(cleaned.split())
 
 
-def format_alert(event: dict, reading: dict | None) -> str:
-    title = event.get("message") or "Событие"
-    lines = [str(title)]
+def format_alert(event: dict, reading: dict | None, energy: dict | None = None) -> str:
+    title = str(event.get("message") or "Событие").strip() or "Событие"
+    blocks = [f"# {_tone(reading)} {_rich(title)}"]
     if reading:
-        extra = status_lines(reading)
-        if extra:
-            lines.append("")
-            lines.extend(extra)
-    return "\n".join(lines)
+        notes = _status_notes(reading)
+        if notes:
+            blocks.append("\n".join(notes))
+        blocks.append("\n".join(_status_table(reading)))
+    return "\n\n".join(blocks)
 
 
 def status_lines(reading: dict) -> list[str]:
     if not reading:
         return ["ИБП пока молчит."]
-    load = reading.get("load_pct")
-    watts = reading.get("load_w")
-    runtime = reading.get("runtime_min")
-    load_line = "Нагрузка —"
-    if load is not None:
-        load_line = f"Нагрузка {fmt(load, 0)}%"
-        if watts is not None:
-            load_line += f" · ≈ {watts} Вт"
-    lines = [
-        f"Сеть: {'есть' if reading.get('mains_ok') else 'нет'}",
-        f"Вход {fmt(reading.get('input_v'))} В · выход {fmt(reading.get('output_v'))} В",
-    ]
-    volt_note = reading.get("voltage_note")
-    if volt_note:
-        lines.append(str(volt_note))
-    lines.extend([
-        load_line,
-        f"Батарея {fmt(reading.get('battery_v'))} В · {fmt(reading.get('battery_pct'), 0)}%",
-    ])
-    if reading.get("battery_boost"):
-        inn = reading.get("input_v")
-        out = reading.get("output_v")
-        direction = reading.get("stabilizer_dir")
-        try:
-            delta = float(out) - float(inn)
-            mag = abs(delta)
-            if direction == "down" or delta < 0:
-                lines.append(f"Стабилизатор: вход выше выхода на {mag:.1f} В")
-            else:
-                lines.append(f"Стабилизатор: выход выше входа на {mag:.1f} В")
-        except (TypeError, ValueError):
-            lines.append("Стабилизатор держит напряжение")
-    if reading.get("battery_loose"):
-        lines.append("Батареи: напряжение скачет, похоже отключены")
-    swap = reading.get("battery_swap")
-    if isinstance(swap, dict) and swap.get("from") is not None and swap.get("to") is not None:
-        lines.append(f"Пакет сменился: {swap['from']} → {swap['to']} В")
-    if runtime is not None:
-        lines.append(f"Автономия ≈ {runtime} мин")
-    if reading.get("on_battery") and reading.get("discharge_seconds"):
-        lines.append(f"Разряд {clock(reading['discharge_seconds'])}")
-    mode = reading.get("mode_label")
-    if mode:
-        lines.append(mode)
-    return lines
+    return format_status_markdown(reading).splitlines()
 
 
 def format_report(hours: int, points: list[dict], events: list[dict], reading: dict | None) -> str:
     title = f"Отчёт за {hours} ч" if hours != 24 else "Отчёт за сутки"
+    blocks = [f"# 📊 {_rich(title)}"]
     if not points:
-        body = ["За этот срок записей нет."]
+        blocks.append("> За этот срок записей нет.")
     else:
         ins = [p["in"] for p in points if p.get("in") is not None and p["in"] >= 80]
         loads = [p["load"] for p in points if p.get("load") is not None]
         outages = _outage_stats(events)
-        body = [
-            f"Сеть пропадала: {_times(outages['count'])}, всего {clock(outages['seconds'])}",
+        rows = [
+            "| Показатель | Значение |",
+            "|:---|---:|",
+            f"| Сеть пропадала | **{_times(outages['count'])}** |",
+            f"| Без сети | **{clock(outages['seconds'])}** |",
         ]
         if ins:
-            body.append(f"Вход: {min(ins):.0f}–{max(ins):.0f} В, среднее {sum(ins)/len(ins):.1f}")
+            rows.append(f"| Вход | **{min(ins):.0f}–{max(ins):.0f} В** |")
+            rows.append(f"| Вход, среднее | **{sum(ins) / len(ins):.1f} В** |")
         if loads:
             avg = sum(loads) / len(loads)
             peak = max(loads)
@@ -1761,20 +1756,27 @@ def format_report(hours: int, points: list[dict], events: list[dict], reading: d
                     kva = watts / (10 * float(reading["load_pct"]))
                 except (TypeError, ValueError, ZeroDivisionError):
                     kva = None
-            line = f"Нагрузка: средняя {avg:.0f}%, пик {peak:.0f}%"
+            rows.append(f"| Нагрузка, средняя | **{avg:.0f}%** |")
+            rows.append(f"| Нагрузка, пик | **{peak:.0f}%** |")
             if kva:
-                line += f" · ≈ {int(round(kva * 10 * avg))}–{int(round(kva * 10 * peak))} Вт"
-            body.append(line)
-    lines = [title, *body]
-    if reading:
-        lines += ["", "Сейчас:", *status_lines(reading)]
+                rows.append(
+                    f"| Мощность | **{int(round(kva * 10 * avg))}–{int(round(kva * 10 * peak))} Вт** |"
+                )
+        blocks.append("\n".join(["## Таблицы", "", *rows]))
     recent = [item for item in events if item.get("code") in _ALERTS][-6:]
     if recent:
-        lines += ["", "События:"]
+        event_rows = ["| Время | Событие |", "|:---|:---|"]
         for item in recent:
             stamp = datetime.fromtimestamp(item["t"]).strftime("%d.%m %H:%M")
-            lines.append(f"{stamp} · {item.get('message') or ''}")
-    return "\n".join(lines)
+            event_rows.append(f"| {stamp} | {_rich(item.get('message') or '')} |")
+        blocks.append("\n".join(["### 📋 События", "", *event_rows]))
+    if reading:
+        now = ["### Сейчас", "", *_status_table(reading)]
+        notes = _status_notes(reading)
+        if notes:
+            now.extend(["", *notes])
+        blocks.append("\n".join(now))
+    return "\n\n".join(blocks)
 
 
 def _markdown_escape(value) -> str:
@@ -1788,10 +1790,13 @@ def format_day_report(day: dict) -> str:
     stats = day.get("stats") or {}
     events = day.get("events") or []
     lines = [
-        f"*Суточный отчёт · {_markdown_escape(day.get('date') or '')}*",
-        f"_Сформирован: {_markdown_escape(day.get('generated') or datetime.now().strftime('%Y-%m-%d %H:%M'))}_",
+        f"# 📈 Суточный отчёт · {_rich(day.get('date') or '')}",
+        f"_Сформирован: {_rich(day.get('generated') or datetime.now().strftime('%Y-%m-%d %H:%M'))}_",
         "",
-        "*Показатели*",
+        "## Таблицы",
+        "",
+        "| Показатель | Значение |",
+        "|:---|---:|",
     ]
     fields = (
         ("samples", "Минут с данными", " мин"),
@@ -1821,18 +1826,18 @@ def format_day_report(day: dict) -> str:
             rendered = f"{value:.2f}".rstrip("0").rstrip(".")
         else:
             rendered = str(value)
-        lines.append(f"• {_markdown_escape(label)}: {rendered}{unit}")
+        lines.append(f"| {_rich(label)} | **{_rich(rendered + unit)}** |")
     if events:
-        lines.extend(["", f"*События ({len(events)})*"])
+        lines.extend(["", f"### 📋 События · {len(events)}", "", "| Время | Событие |", "|:---|:---|"])
         for item in events:
             try:
                 stamp = datetime.fromtimestamp(float(item.get("t") or 0)).strftime("%d.%m %H:%M:%S")
             except (TypeError, ValueError, OSError):
                 stamp = "время неизвестно"
-            message = _markdown_escape(item.get("message") or item.get("code") or "Событие")
-            lines.append(chr(96) + stamp + chr(96) + " · " + message)
+            message = _rich(item.get("message") or item.get("code") or "Событие")
+            lines.append(f"| {stamp} | {message} |")
     else:
-        lines.extend(["", "*События*", "Нет событий за этот день."])
+        lines.extend(["", "### 📋 События", "", "> Нет событий за этот день."])
     return "\n".join(lines)
 
 
@@ -1858,28 +1863,31 @@ def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
 def format_events(events: list[dict], limit: int = 8) -> str:
     if not events:
         return "Журнал пуст."
-    lines = ["Последние события:"]
+    lines = ["## 📋 Журнал", "", "| Время | Событие |", "|:---|:---|"]
     for item in events[-limit:]:
         try:
             stamp = datetime.fromtimestamp(float(item.get("t") or 0)).strftime("%d.%m %H:%M")
         except (TypeError, ValueError, OSError):
             stamp = "время неизвестно"
-        message = str(item.get("message") or "Событие").strip()
-        lines.append(f"{stamp} · {message}")
+        lines.append(f"| {stamp} | {_rich(item.get('message') or 'Событие')} |")
     return "\n".join(lines)
 
 
 def help_text(username: str) -> str:
     who = f"@{username}" if username else "бот"
-    return (
-        f"{who} следит за питанием.\n"
-        "ПК — выключение, сон, перезагрузка и гибернация.\n"
-        "ПО — скриншот и перезапуск программы.\n"
-        "Отчёты — состояние, журнал, отчёт дня в Markdown и сводка в HTML.\n"
-        "Трансляция — живая карточка и суточные кВт·ч. «Время» открывает срок и частоту, повторное ∞ возвращает счётчик.\n"
-        "Слева от поля ввода — состояние, скриншот и журнал.\n"
-        "Новый чат привязывается кодом из программы, без /start."
-    )
+    return "\n".join([
+        f"# 📡 {_rich(who)}",
+        "",
+        "| Раздел | Что умеет |",
+        "|:---|:---|",
+        "| ПК | выключение, сон, перезагрузка, гибернация |",
+        "| ПО | скриншот и перезапуск программы |",
+        "| Отчёты | состояние, журнал, отчёт дня и сводка |",
+        "| Трансляция | живая карточка, суточные кВт·ч, срок и частота |",
+        "",
+        "> Новый чат привязывается кодом из программы, без /start.",
+        "> Слева от поля ввода — состояние, скриншот и журнал.",
+    ])
 
 
 def fmt(value, digits: int = 1) -> str:
@@ -2092,18 +2100,18 @@ def _boost_line(reading: dict) -> str:
     return f"Стабилизатор: выход выше входа на {abs(delta):.1f} В"
 
 
-def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False, tables_open: bool = False, flags_open: bool = False) -> str:
+def format_live_markdown(reading: dict | None, message: str = "", energy: dict | None = None, protocol_open: bool = False, tables_open: bool = False, flags_open: bool = False, live: bool = True, heading: str | None = None) -> str:
     updated = reading.get("updated_at") if reading else None
     try:
         unix = int(float(updated)) if updated else int(time.time())
     except (TypeError, ValueError):
         unix = int(time.time())
     stamp = time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(unix))
-    blocks = [
-        f"# {_tone(reading)} {APP_NAME}",
-        "## 📡 Живая трансляция",
-        f"Обновлено ![{stamp}](tg://time?unix={unix}&format=wDT)",
-    ]
+    title = _rich(heading) if heading else APP_NAME
+    blocks = [f"# {_tone(reading)} {title}"]
+    if live:
+        blocks.append("## 📡 Живая трансляция")
+    blocks.append(f"Обновлено ![{stamp}](tg://time?unix={unix}&format=wDT)")
     if not reading:
         quote = ["> ИБП пока молчит."]
         if message:
@@ -2214,6 +2222,112 @@ def format_live_markdown(reading: dict | None, message: str = "", energy: dict |
         )
     if extra and protocol_open:
         blocks.append("\n".join(["## 📋 Протокол и пороги", "", *extra]))
+    return "\n\n".join(blocks)
+
+
+def _status_table(reading: dict) -> list[str]:
+    load = reading.get("load_pct")
+    watts = reading.get("load_w")
+    load_line = "—"
+    if load is not None:
+        load_line = f"{fmt(load, 0)}%"
+        if watts is not None:
+            load_line += f" · ≈ {fmt(watts, 0)} Вт"
+    rows = [
+        "| Показатель | Значение |",
+        "|:---|---:|",
+        f"| Сеть | **{'есть' if reading.get('mains_ok') else 'нет'}** |",
+        f"| Вход | **{fmt(reading.get('input_v'))} В** |",
+        f"| Выход | **{fmt(reading.get('output_v'))} В** |",
+        f"| Нагрузка | **{load_line}** |",
+        f"| Батарея | **{fmt(reading.get('battery_v'))} В · {fmt(reading.get('battery_pct'), 0)}%** |",
+    ]
+    if reading.get("runtime_min") is not None:
+        rows.append(f"| Автономия | **≈ {fmt(reading.get('runtime_min'), 0)} мин** |")
+    if reading.get("on_battery") and reading.get("discharge_seconds"):
+        rows.append(f"| Разряд | **{clock(reading.get('discharge_seconds'))}** |")
+    return rows
+
+
+def _status_notes(reading: dict) -> list[str]:
+    notes = []
+    if reading.get("voltage_note"):
+        notes.append(f"> {_rich(reading.get('voltage_note'))}")
+    if reading.get("battery_boost"):
+        notes.append(f"> {_rich(_boost_line(reading))}")
+    if reading.get("battery_loose"):
+        notes.append("> Напряжение батареи скачет, похоже она отключена")
+    swap = reading.get("battery_swap")
+    if isinstance(swap, dict) and swap.get("from") is not None and swap.get("to") is not None:
+        notes.append(f"> Пакет сменился: **{fmt(swap.get('from'))} → {fmt(swap.get('to'))} В**")
+    if reading.get("shutdown_seconds") is not None:
+        label = _SHUTDOWN_LABEL.get(str(reading.get("shutdown_kind") or ""), "Выключение ПК")
+        notes.append(f"> =={_rich(label)} через {clock(reading.get('shutdown_seconds'))}==")
+    mode = reading.get("mode_label")
+    if mode:
+        notes.append(f"> {_rich(mode)}")
+    return notes
+
+
+def _kwh_number(report: dict | None):
+    if not isinstance(report, dict):
+        return None
+    try:
+        return float(report.get("energyKwh"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _energy_status(energy: dict | None) -> str:
+    if not isinstance(energy, dict) or "today" not in energy:
+        return ""
+    clock = str(energy.get("clock") or "")
+    today = _kwh_number(energy.get("today"))
+    same = _kwh_number(energy.get("yesterdaySame"))
+    yesterday = _kwh_number(energy.get("yesterday"))
+    last = _kwh_number(energy.get("last24"))
+    same_label = f"Вчера до {clock}" if clock else "Вчера к этому времени"
+    rows = [
+        "### 📈 Энергия",
+        "",
+        "| Период | Значение |",
+        "|:---|---:|",
+        f"| Сегодня | {_kwh(today)} |",
+        f"| {same_label} | {_kwh(same)} |",
+        f"| Вчера | {_kwh(yesterday)} |",
+        f"| Последние 24 ч | {_kwh(last)} |",
+    ]
+    if today is not None and same is not None:
+        delta = today - same
+        when = f"до {clock}" if clock else "к этому времени"
+        if abs(delta) < 0.0005:
+            note = f"Сегодня {when} столько же, сколько вчера {when}"
+        elif delta > 0:
+            note = f"Сегодня {when} на {_kwh(delta)} больше, чем вчера {when}"
+        else:
+            note = f"Сегодня {when} на {_kwh(abs(delta))} меньше, чем вчера {when}"
+        rows.extend(["", f"> {note}"])
+    return "\n".join(rows)
+
+
+def format_status_markdown(reading: dict | None, message: str = "", energy: dict | None = None) -> str:
+    energy_block = _energy_status(energy)
+    if not reading:
+        lines = ["> ИБП пока молчит."]
+        if message:
+            lines.append(f"> {_rich(message)}")
+        if energy_block:
+            lines.extend(["", energy_block])
+        return "\n".join(lines)
+    blocks = [f"# {_tone(reading)} {APP_NAME}"]
+    if message:
+        blocks.append(f"> {_rich(message)}")
+    notes = _status_notes(reading)
+    if notes:
+        blocks.append("\n".join(notes))
+    blocks.append("\n".join(_status_table(reading)))
+    if energy_block:
+        blocks.append(energy_block)
     return "\n\n".join(blocks)
 
 
@@ -2406,7 +2520,46 @@ def _keyboard(menu: str | None, chat: dict | None = None) -> dict:
     }
 
 
-def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12, silent: bool = False, chat: dict | None = None) -> None:
+def _rich_notice(text: str) -> bool:
+    body = str(text or "")
+    return "\n|" in body or body.startswith("#") or "\n#" in body
+
+
+def _plain_notice(text: str) -> str:
+    lines = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("|"):
+            continue
+        if line.startswith("#"):
+            line = line.lstrip("#").strip()
+        elif line.startswith(">"):
+            line = line[1:].strip()
+        for char in ("*", "`", "_"):
+            line = line.replace(char, "")
+        line = line.strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines[:3]) or "UPS"
+
+
+def _send_rich(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12, silent: bool = False, chat: dict | None = None) -> None:
+    chunks = split_telegram_text(text)
+    for index, chunk in enumerate(chunks):
+        payload = {
+            "chat_id": chat_id,
+            "rich_message": {"markdown": chunk, "skip_entity_detection": True},
+            "disable_notification": bool(silent),
+        }
+        if index == len(chunks) - 1:
+            if inline:
+                payload["reply_markup"] = {"inline_keyboard": [inline] if inline and isinstance(inline[0], dict) else inline}
+            elif menu:
+                payload["reply_markup"] = _keyboard(menu, chat)
+        _api(token, "sendRichMessage", payload, timeout=timeout)
+
+
+def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list | None = None, timeout: float = 12, silent: bool = False, chat: dict | None = None) -> dict:
     payload = {
         "chat_id": chat_id,
         "text": text[:3900],
@@ -2417,7 +2570,7 @@ def _send(token: str, chat_id, text: str, menu: str | None = None, inline: list 
         payload["reply_markup"] = {"inline_keyboard": [inline] if inline and isinstance(inline[0], dict) else inline}
     elif menu:
         payload["reply_markup"] = _keyboard(menu, chat)
-    _api(token, "sendMessage", payload, timeout=timeout)
+    return _api(token, "sendMessage", payload, timeout=timeout)
 
 
 def _send_photo(token: str, chat_id, png: bytes, caption: str = "", inline: list | None = None, menu: str | None = "root", timeout: float = 20, silent: bool = False, chat: dict | None = None) -> None:

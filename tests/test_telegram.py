@@ -26,10 +26,12 @@ from ups.telegram import (
     compose_live_markdown,
     shift_live_deadline,
     format_events,
+    _plain_notice,
     format_day_report,
     format_live_markdown,
     _live_keyboard,
     format_report,
+    format_status_markdown,
     split_telegram_text,
     parse_clock,
     poll_error_fatal,
@@ -62,6 +64,13 @@ class TokenTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(clean["telegram_live_timeout"], 15)
         self.assertEqual(clean["telegram_live_interval"], 5)
+        clean, error = _validate({"telegram_live_timeout": 1440, "telegram_live_infinite": True})
+        self.assertIsNone(error)
+        self.assertEqual(clean["telegram_live_timeout"], 1440)
+        self.assertTrue(clean["telegram_live_infinite"])
+        clean, error = _validate({"telegram_live_timeout": 1441})
+        self.assertEqual(clean, {})
+        self.assertIn("telegram_live_timeout", error or "")
         clean, error = _validate({"telegram_live_timeout": 0})
         self.assertEqual(clean, {})
         self.assertIn("telegram_live_timeout", error or "")
@@ -162,10 +171,13 @@ class ReportTests(unittest.TestCase):
             "mode_label": "Питание от батареи",
         })
         text = "\n".join(lines)
-        self.assertIn("Сеть: нет", text)
+        self.assertIn("| Сеть | **нет** |", text)
         self.assertIn("215.2", text)
-        self.assertIn("≈ 252 Вт", text)
-        self.assertIn("≈ 22 мин", text)
+        self.assertIn("252", text)
+        self.assertIn("| Выход |", text)
+        self.assertIn("| Автономия |", text)
+        self.assertIn("22", text)
+        self.assertNotIn("Живая трансляция", text)
 
     def test_status_mentions_low_mains(self):
         lines = status_lines({
@@ -189,6 +201,28 @@ class ReportTests(unittest.TestCase):
         })
         self.assertIn("26.6 → 24.1 В", "\n".join(lines))
 
+    def test_status_compares_energy_to_the_same_time_yesterday(self):
+        text = format_status_markdown({"mains_ok": True, "input_v": 220}, energy={
+            "clock": "13:00",
+            "today": {"energyKwh": 1.25},
+            "yesterdaySame": {"energyKwh": 1.0},
+            "yesterday": {"energyKwh": 3.4},
+            "last24": {"energyKwh": 2.8},
+        })
+        self.assertIn("| Сегодня | **1.25 кВт·ч** |", text)
+        self.assertIn("| Вчера до 13:00 | **1 кВт·ч** |", text)
+        self.assertIn("| Вчера | **3.4 кВт·ч** |", text)
+        self.assertIn("| Последние 24 ч | **2.8 кВт·ч** |", text)
+        self.assertIn("на **0.25 кВт·ч** больше, чем вчера до 13:00", text)
+        less = format_status_markdown({"mains_ok": True}, energy={
+            "clock": "13:00",
+            "today": {"energyKwh": 0.4},
+            "yesterdaySame": {"energyKwh": 0.9},
+            "yesterday": {"energyKwh": 2},
+            "last24": {"energyKwh": 1.5},
+        })
+        self.assertIn("на **0.5 кВт·ч** меньше, чем вчера до 13:00", less)
+
     def test_full_day_report_includes_every_event_and_markdown(self):
         events = [
             {"t": 1710000000 + index, "code": "fault", "message": f"Событие_{index}"}
@@ -200,11 +234,12 @@ class ReportTests(unittest.TestCase):
             "stats": {"events": 12, "outages": 2, "energyKwh": 1.25, "peakW": 420},
             "events": events,
         })
-        self.assertIn("*Суточный отчёт", text)
+        self.assertIn("# 📈 Суточный отчёт", text)
+        self.assertIn("| Показатель | Значение |", text)
         self.assertIn("Пиковая мощность", text)
         self.assertIn("Событие\\_0", text)
         self.assertIn("Событие\\_11", text)
-        self.assertEqual(text.count(chr(96)), 24)
+        self.assertIn("| Время | Событие |", text)
         chunks = split_telegram_text("строка\n" * 1000, limit=3900)
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 3900 for chunk in chunks))
@@ -459,6 +494,66 @@ class ReportTests(unittest.TestCase):
         bot._toggle_protocol(7)
         self.assertFalse(bot._live_sessions[7]["protocol_open"])
 
+    def test_menu_switch_drops_the_label_and_ignores_a_repeat(self):
+        class Host:
+            def get_settings_raw(self):
+                return {"telegram_chats": [{"id": 7, "name": "test"}]}
+
+        calls = []
+
+        ids = iter([5, 6])
+
+        def api(_token, method, payload=None, timeout=12):
+            calls.append((method, payload or {}))
+            if method == "sendMessage":
+                return {"result": {"message_id": next(ids)}}
+            return {"result": True}
+
+        bot = TelegramBridge(Host())
+        bot._token = "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        with patch("ups.telegram._api", side_effect=api):
+            bot._open_menu(7, "reports", "Отчёты и журнал.")
+            bot._open_menu(7, "reports", "Отчёты и журнал.")
+            bot._open_menu(7, "root", "Главное меню.")
+        self.assertEqual(
+            [method for method, _payload in calls],
+            ["sendMessage", "sendMessage", "deleteMessage"],
+        )
+        self.assertEqual(calls[0][1]["text"], "Отчёты и журнал.")
+        self.assertEqual(calls[1][1]["text"], "Главное меню.")
+        self.assertEqual(calls[2][1]["message_id"], 5)
+        self.assertEqual(bot._menu_messages[7], 6)
+
+    def test_live_setting_can_start_without_timeout(self):
+        class Host:
+            def get_settings_raw(self):
+                return {
+                    "telegram_live_timeout": 1440,
+                    "telegram_live_infinite": True,
+                    "telegram_live_interval": 3,
+                    "telegram_chats": [{"id": 7, "name": "test"}],
+                }
+
+            def telegram_live_text(self, **_kwargs):
+                return "карточка"
+
+        class DummyThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        bot = TelegramBridge(Host())
+        bot._token = "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        with patch("ups.telegram._api", return_value={"result": {"message_id": 9}}), patch("ups.telegram.threading.Thread", DummyThread):
+            bot._start_live(7)
+        session = bot._live_sessions[7]
+        self.assertTrue(session["infinite"])
+        self.assertEqual(session["timeout"], 1440 * 60)
+        self.assertEqual(session["frozen_remaining"], 1440 * 60)
+        session["stop"].set()
+
     def test_report_counts_outages(self):
         points = [{"in": 220, "load": 30}, {"in": 210, "load": 40}]
         events = [
@@ -466,7 +561,8 @@ class ReportTests(unittest.TestCase):
             {"t": 160, "code": "on_battery_clear", "message": "Сеть вернулась"},
         ]
         text = format_report(24, points, events, None)
-        self.assertIn("Отчёт за сутки", text)
+        self.assertIn("# 📊 Отчёт за сутки", text)
+        self.assertIn("| Показатель | Значение |", text)
         self.assertNotIn("Точек:", text)
         self.assertIn("1 раз", text)
         self.assertIn("1 мин", text)
@@ -476,8 +572,16 @@ class ReportTests(unittest.TestCase):
             {"code": "on_battery", "message": "Сеть пропала, питание от батареи"},
             {"mains_ok": False, "input_v": 0, "output_v": 214},
         )
-        self.assertTrue(text.startswith("Сеть пропала"))
-        self.assertIn("Сеть: нет", text)
+        self.assertIn("Сеть пропала", text.splitlines()[0])
+        self.assertIn("| Сеть | **нет** |", text)
+        self.assertIn("| Выход |", text)
+        self.assertIn("214", text)
+        self.assertNotIn("Живая трансляция", text)
+        self.assertNotIn("📈", text)
+        plain = _plain_notice(text)
+        self.assertNotIn("#", plain)
+        self.assertNotIn("|", plain)
+        self.assertIn("Сеть пропала", plain)
 
     def test_each_alert_has_its_own_picture(self):
         codes = [
@@ -526,10 +630,9 @@ class ReportTests(unittest.TestCase):
         text = format_events([
             {"t": 1710000000, "message": "Сеть_пропала *авария*"}
         ])
-        self.assertEqual(text.splitlines()[0], "Последние события:")
-        self.assertIn("Сеть_пропала *авария*", text)
-        self.assertNotIn(chr(96), text)
-        self.assertNotIn("\\_", text)
+        self.assertEqual(text.splitlines()[0], "## 📋 Журнал")
+        self.assertIn("| Время | Событие |", text)
+        self.assertIn("Сеть\\_пропала \\*авария\\*", text)
 
     def test_token_is_stripped_from_public_settings(self):
         public = _public_settings({"telegram_token": "123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxx", "telegram_chats": [{"id": 1, "name": "ivan"}]})

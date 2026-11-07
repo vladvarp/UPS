@@ -241,7 +241,9 @@ $("leaveDemo").addEventListener("click", () => command("live"));
 $("btnSimulate").addEventListener("click", () => command("simulate"));
 $("btnCancelShutdown").addEventListener("click", cancelShutdown);
 $("tgNewPair").addEventListener("click", () => telegramAction("telegram_new_pair"));
-$("tgUnlink").addEventListener("click", () => telegramAction("telegram_unlink"));
+$("tgUnlink").addEventListener("click", () => askUnlink({ kind: "all" }));
+$("unlinkNo").addEventListener("click", () => $("unlinkDialog").close());
+$("unlinkYes").addEventListener("click", confirmUnlink);
 $("tgChatList").addEventListener("click", onChatListClick);
 $("closeChat").addEventListener("click", () => $("chatDialog").close());
 $("chatGuest").addEventListener("change", onChatRoleChange);
@@ -344,6 +346,7 @@ document.addEventListener("visibilitychange", () => {
 });
 $("tgDigest").addEventListener("change", saveTelegramFlags);
 $("tgLiveTimeout").addEventListener("change", saveTelegramFlags);
+$("tgLiveInfinite").addEventListener("change", saveTelegramFlags);
 $("tgLiveInterval").addEventListener("change", saveTelegramFlags);
 $("tgEventList").addEventListener("change", (event) => {
   const input = event.target;
@@ -853,8 +856,8 @@ async function saveTelegramFlags() {
   syncDigestTime();
   const timeout = Number($("tgLiveTimeout").value);
   const interval = Number($("tgLiveInterval").value);
-  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) {
-    $("tgLiveTimeout").setCustomValidity("Укажите значение от 1 до 120 минут");
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 1440) {
+    $("tgLiveTimeout").setCustomValidity("Укажите значение от 1 до 1440 минут");
     $("tgLiveTimeout").reportValidity();
     return;
   }
@@ -872,6 +875,7 @@ async function saveTelegramFlags() {
       telegram_digest: $("tgDigest").checked,
       telegram_digest_time: digestClockValue(),
       telegram_live_timeout: timeout,
+      telegram_live_infinite: $("tgLiveInfinite").checked,
       telegram_live_interval: interval,
       telegram_events: telegramEventsPayload(),
       windows_notify: $("windowsNotify").checked,
@@ -1153,10 +1157,34 @@ function onChatListClick(event) {
   if (!button || !row) return;
   const id = row.dataset.id;
   if (button.dataset.chatAct === "unlink") {
-    updateTelegramChat({ id, action: "unlink" });
+    const chat = findChat(id);
+    askUnlink({ kind: "one", id, name: (chat && chat.name) || id });
     return;
   }
   openChatDialog(id);
+}
+
+let unlinkPending = null;
+
+function askUnlink(action) {
+  unlinkPending = action;
+  const all = action.kind === "all";
+  $("unlinkTitle").textContent = all ? "Отвязать все чаты?" : "Отвязать чат?";
+  $("unlinkText").textContent = all
+    ? "Бот перестанет писать во все привязанные чаты."
+    : `Бот перестанет писать в «${action.name}».`;
+  const dialog = $("unlinkDialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function confirmUnlink() {
+  const action = unlinkPending;
+  unlinkPending = null;
+  const dialog = $("unlinkDialog");
+  if (dialog.open) dialog.close();
+  if (!action) return;
+  if (action.kind === "all") telegramAction("telegram_unlink");
+  else updateTelegramChat({ id: action.id, action: "unlink" });
 }
 
 function openChatDialog(id) {
@@ -1350,6 +1378,7 @@ function fillTelegramFields() {
   $("tgDigest").checked = Boolean(settings.telegram_digest);
   $("windowsNotify").checked = settings.windows_notify !== false;
   $("tgLiveTimeout").value = String(settings.telegram_live_timeout || 10);
+  $("tgLiveInfinite").checked = Boolean(settings.telegram_live_infinite);
   $("tgLiveTimeout").setCustomValidity("");
   $("tgLiveInterval").value = String(settings.telegram_live_interval || 3);
   $("tgLiveInterval").setCustomValidity("");

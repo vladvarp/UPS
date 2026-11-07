@@ -474,10 +474,15 @@
                 </label>
                 <label>
                   Тайм-аут трансляции, мин
-                  <input id="tgLiveTimeout" name="telegram_live_timeout" type="number" min="1" max="120" step="1" value="10" required title="Через сколько минут трансляция завершится автоматически">
+                  <input id="tgLiveTimeout" name="telegram_live_timeout" type="number" min="1" max="1440" step="1" value="10" required title="Через сколько минут трансляция завершится автоматически, до 24 часов">
                 </label>
               </div>
-              <p>Трансляция автоматически завершится по истечении заданного тайм-аута.</p>
+              <label class="switch">
+                <input id="tgLiveInfinite" name="telegram_live_infinite" type="checkbox">
+                <span></span>
+                <em>Без тайм-аута</em>
+              </label>
+              <p>Срок от 1 минуты до 24 часов. Без тайм-аута трансляция не останавливается сама, а повторное ∞ в чате возвращает заданный срок.</p>
             </div>
           </article>
 
@@ -626,6 +631,15 @@
         <div class="chat-rule-head chat-rule-head-one"><span>Кнопка</span><span>Вкл</span></div>
         <div id="chatActionList"></div>
       </section>
+    </div>
+  </dialog>
+
+  <dialog id="unlinkDialog" class="quit-dialog">
+    <h2 id="unlinkTitle">Отвязать чат?</h2>
+    <p id="unlinkText">Бот перестанет писать в этот чат.</p>
+    <div class="quit-actions">
+      <button type="button" class="primary" id="unlinkYes">Отвязать</button>
+      <button type="button" class="ghost" id="unlinkNo">Отмена</button>
     </div>
   </dialog>
 

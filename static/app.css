@@ -2277,6 +2277,7 @@ label.switch input {
 }
 .live-settings-grid label { color: var(--text); }
 .live-settings-grid input { width: 100%; }
+.live-timeout .switch { margin: 12px 0 0; }
 .live-timeout > p:last-child {
   margin: 8px 0 0;
   color: var(--muted);

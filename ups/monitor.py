@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ups import APP_NAME, __version__
@@ -69,10 +70,10 @@ from ups.telegram import (
     format_events,
     format_live_markdown,
     format_report,
+    format_status_markdown,
     merge_global_events,
     parse_clock,
     public_chat,
-    status_lines,
     windows_notify_allowed,
 )
 
@@ -103,6 +104,7 @@ DEFAULTS = {
     "telegram_digest": False,
     "telegram_digest_time": "21:00",
     "telegram_live_timeout": 10,
+    "telegram_live_infinite": False,
     "telegram_live_interval": 3,
     "windows_notify": True,
     "spark_lines": ["in", "out", "batt"],
@@ -138,7 +140,7 @@ _LIMITS = {
     "volt_crit_low": (80, 300),
     "volt_crit_high": (80, 300),
     "spark_window": (30, 86400),
-    "telegram_live_timeout": (1, 120),
+    "telegram_live_timeout": (1, 1440),
     "telegram_live_interval": (1, 60),
 }
 
@@ -497,7 +499,7 @@ class Monitor:
         with self._lock:
             reading = None if self._reading is None else dict(self._reading)
             message = self._message
-        return "\n".join([f"{APP_NAME} · {message}", *status_lines(reading)])
+        return format_status_markdown(reading, message, self._status_energy())
 
     def telegram_report_text(self, hours: int) -> str:
         hours = max(1, min(int(hours), 24 * 14))
@@ -512,6 +514,31 @@ class Monitor:
         with self._lock:
             events = list(self._events)
         return format_events(events)
+
+    def _status_energy(self) -> dict:
+        now = datetime.now().replace(microsecond=0)
+        today_start = now.replace(hour=0, minute=0, second=0)
+        yesterday_start = today_start - timedelta(days=1)
+        yesterday_same = yesterday_start.replace(hour=now.hour, minute=now.minute, second=now.second)
+        spans = {
+            "today": (today_start, now),
+            "yesterdaySame": (yesterday_start, yesterday_same),
+            "yesterday": (yesterday_start, today_start),
+            "last24": (now - timedelta(hours=24), now),
+        }
+        report = {"clock": now.strftime("%H:%M")}
+        for key, (start, end) in spans.items():
+            start_ts = start.timestamp()
+            end_ts = end.timestamp()
+            if end_ts <= start_ts:
+                report[key] = {"energyKwh": 0}
+                continue
+            try:
+                item = self.energy(start_ts, end_ts)
+            except (sqlite3.Error, OSError, TypeError, ValueError):
+                item = {}
+            report[key] = item if isinstance(item, dict) else {}
+        return report
 
     def _today_energy(self) -> dict:
         now = time.time()
@@ -1857,7 +1884,7 @@ def _validate(payload: dict) -> tuple[dict, str | None]:
             continue
         if key in {
             "sound", "pc_shutdown", "telegram_notify_power", "telegram_notify_alerts",
-            "telegram_digest", "autostart", "journal_enabled", "windows_notify",
+            "telegram_digest", "telegram_live_infinite", "autostart", "journal_enabled", "windows_notify",
             "q1_battery_low",
         }:
             clean[key] = bool(value)
